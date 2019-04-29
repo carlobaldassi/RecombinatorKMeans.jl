@@ -60,6 +60,9 @@ function init_centroid_unif(data::Matrix{Float64}, k::Int; w = nothing)
     return centr
 end
 
+# This function was first written from scratch from the k-means++ paper, then improved after reading
+# the corresponding scikit-learn's code at https://github.com/scikit-learn/scikit-learn, then heavily modified.
+# The scikit-learn's version was first coded by Jan Schlueter as a port of some other code that is now lost.
 function init_centroid_pp(pool::Matrix{Float64}, k::Int; ncandidates = nothing, w = nothing, data = nothing)
     m, np = size(pool)
 
@@ -119,13 +122,32 @@ function init_centroid_pp(pool::Matrix{Float64}, k::Int; ncandidates = nothing, 
     return centr
 end
 
+"""
+  kmeans(data::Matrix{Float64}, k::Integer; keywords...)
+
+Runs k-means using Lloyd's algorithm on the given data matrix (if the size is `d`×`n` then `d` is
+the dimension and `n` the number of points, i.e. data is organized by column).
+It returns: 1) a vector of labels (`n` integers from 1 to `k`); 2) a `d`×`k` matrix of centroids;
+3) the final loss
+
+The possible keyword arguments are:
+
+* `max_it`: maximum number of iterations (default=1000). Normally the algorithm stops at fixed
+  points.
+* `seed`: random seed, either an integer or `nothing` (this is the default, it means no seeding
+  is performed).
+* `init`: how to initialize (default=`"++"`). It can be a string or a `Matrix{Float64}`. If it's
+  a matrix, it represents the initial centroids (by column). If it is a string, it can be either
+  `"++"` for k-means++ initialization, or `"unif"` for uniform.
+* `verbose`: a `Bool`; if `true` (the default) it prints information on screen.
+"""
 function kmeans(data::Matrix{Float64}, k::Integer;
                 max_it::Integer = 1000,
-                seed::Integer = 1324235434345,
+                seed::Union{Integer,Nothing} = nothing,
                 init::Union{String,Matrix{Float64}} = "++",
                 verbose::Bool = true
                )
-    Random.seed!(seed)
+    seed ≢ nothing && Random.seed!(seed)
     m, n = size(data)
 
     if init isa String
@@ -164,14 +186,46 @@ struct ResultsRecKMeans
     all_losses::Union{Nothing,Vector{Vector{Float64}}}
 end
 
+"""
+  reckmeans(data::Matrix{Float64}, k::Integer, Rlist; keywords...)
+
+Runs recombinator-k-means on the given data matrix (if the size is `d`×`n` then `d` is
+the dimension and `n` the number of points, i.e. data is organized by column). The `Rlist`
+paramter is either an integer or an iterable that specifies how many restarts to do for
+each successive batch. If it is an integer, it just does the same number of batches indefinitely
+until some stopping criterion gets triggered. If it is an iterable with a finite length,
+e.g. `[10,5,2]`, the algorithm might exit after the end of the list instead.
+
+It returns an object of type `ResultsRecKMeans`, which contains the following fields:
+* exit_status: a symbol that indicates the reason why the algorithm stopped. It can take three
+  values, `:collapsed`, `:didntimprove` or `:maxiters`.
+* labels: a vector of labels (`n` integers from 1 to `k`)
+* centroids: a `d`×`k` matrix of centroids
+* loss: the final loss
+* all_losses: either `nothing`, or a vector of vectors of all the losses found during the
+  iteration (one vector per batch), depending on the value of the `keepalllosses` option.
+
+The possible keyword arguments are:
+
+* `β`: a `Float64` (default=7.5), the reweigting parameter (only makes sense if non-negative)
+* `seed`: random seed, either an integer or `nothing` (this is the default, it means no seeding
+  is performed).
+* `tol`: a `Float64` (default=1e-4), the relative tolerance for determining whether the solutions
+  have collapsed or have stopped improving
+* `verbose`: a `Bool`; if `true` (the default) it prints information on screen.
+* `keepalllosses`: a `Bool` (default=`false`); if `true`, the returned structure contains all the
+  losses found during the iteration.
+
+If there are workers available this function will parallelize each batch.
+"""
 function reckmeans(data::Matrix{Float64}, k::Integer, Rlist;
-                   β = 10.0,
-                   seed::Integer = 1324235434345,
+                   β = 7.5,
+                   seed::Union{Integer,Nothing} = nothing,
                    tol::Float64 = 1e-4,
                    verbose::Bool = true,
                    keepalllosses::Bool = false
                   )
-    Random.seed!(seed)
+    seed ≢ nothing && Random.seed!(seed)
     m, n = size(data)
 
     best_cost = Inf
@@ -220,8 +274,8 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Rlist;
         end
         w ./= sum(w)
         dd = hcat(centroidsR...)
-        verbose && println("  mean cost = $mean_cost best_cost = $best_cost old_best_cost = $old_best_cost")
-        if (mean_cost / best_cost - 1) ≤ tol
+        verbose && (@everywhere flush(stdout); println("  mean cost = $mean_cost best_cost = $best_cost"))
+        if mean_cost ≤ best_cost * (1 + tol)
             verbose && @info "collapsed"
             exit_status = :collapsed
             break
