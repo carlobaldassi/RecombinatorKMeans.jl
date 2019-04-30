@@ -76,6 +76,14 @@ the correct path.)
 
 After this `using RecombinatorKMeans` should work and `reckmeans` should run in parallel.
 
+### Reproducing the results in the paper
+
+For the purpose of complete reproducibility, you can check out the tag `paper-v1` of the repository,
+which will get you the version of the code used to collect the results in the [paper][RKMarXiv].
+Also, the repository includes a file "Manifest_20190429.toml" that specifies the exact version of the
+dependencies that were used. You can use it to overwrite your "Manifest.toml" file and then call
+`instantiate` in pkg mode to reproduce the same environment.
+
 ## Licence
 
 The code is released under the MIT licence.
