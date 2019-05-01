@@ -187,10 +187,10 @@ struct ResultsRecKMeans
 end
 
 """
-  reckmeans(data::Matrix{Float64}, k::Integer, Rlist; keywords...)
+  reckmeans(data::Matrix{Float64}, k::Integer, Jlist; keywords...)
 
 Runs recombinator-k-means on the given data matrix (if the size is `d`×`n` then `d` is
-the dimension and `n` the number of points, i.e. data is organized by column). The `Rlist`
+the dimension and `n` the number of points, i.e. data is organized by column). The `Jlist`
 paramter is either an integer or an iterable that specifies how many restarts to do for
 each successive batch. If it is an integer, it just does the same number of batches indefinitely
 until some stopping criterion gets triggered. If it is an iterable with a finite length,
@@ -218,7 +218,7 @@ The possible keyword arguments are:
 
 If there are workers available this function will parallelize each batch.
 """
-function reckmeans(data::Matrix{Float64}, k::Integer, Rlist;
+function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
                    β = 7.5,
                    seed::Union{Integer,Nothing} = nothing,
                    tol::Float64 = 1e-4,
@@ -240,11 +240,11 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Rlist;
     if Rlist isa Int
         Rlist = Iterators.repeated(Rlist)
     end
-    for (it,R) in enumerate(Rlist)
-        verbose && @info "it = $it R = $R"
+    for (it,J) in enumerate(Rlist)
+        verbose && @info "it = $it J = $J"
         @assert length(w) == size(dd, 2)
         h0 = hash(dd)
-        res = pmap(1:R) do a
+        res = pmap(1:J) do a
             h = hash((seed, a), h0)
             Random.seed!(h)  # horrible hack to ensure determinism (not really required, only useful for experiments)
             centr = init_centroid_pp(dd, k, w = w, data = data)
@@ -267,9 +267,9 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Rlist;
             best_cost = batch_best_cost
             best_centr .= centroidsR[a_opt]
         end
-        resize!(w, R*k)
+        resize!(w, J*k)
         mean_cost = mean(costs)
-        for a = 1:R
+        for a = 1:J
             w[(1:k) .+ (a-1)*k] .= exp(-β * ((costs[a] - batch_best_cost) / (mean_cost - batch_best_cost)))
         end
         w ./= sum(w)
