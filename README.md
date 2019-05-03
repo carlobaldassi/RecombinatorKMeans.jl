@@ -93,6 +93,6 @@ the corresponding [scikit-learn's code][sklearnkmeans], then heavily modified.
 The scikit-learn's version was first coded by Jan Schlueter as a port of some other code that is now lost.
 
 [Julia]: https://julialang.org
-[RKMarXiv]: http://arxiv.org/abs/sorrynotyet
+[RKMarXiv]: https://arxiv.org/abs/1905.00531
 [km++]: https://scholar.google.com/scholar?cluster=16794944444927209316
 [sklearnkmeans]: https://github.com/scikit-learn/scikit-learn/blob/master/sklearn/cluster/k_means_.py
