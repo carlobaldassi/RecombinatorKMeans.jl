@@ -2,7 +2,6 @@
 
 This code implements the recombinator-k-means method described in the paper
 *"Recombinator-k-means: Enhancing k-means++ by seeding from pools of previous runs"* by C. Baldassi
-*"A method to reduce the rejection rate in Monte Carlo Markov Chains"* by C. Baldassi,
 submitted for publication, (2019) ([arXiv][RKMarXiv]).
 
 The code is written in [Julia]. It requires Julia 1.0 or later.
