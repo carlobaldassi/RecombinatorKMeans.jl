@@ -237,10 +237,10 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
     old_best_cost = Inf
     allcosts = keepalllosses ? Vector{Float64}[] : nothing
     exit_status = :running
-    if Rlist isa Int
-        Rlist = Iterators.repeated(Rlist)
+    if Jlist isa Int
+        Jlist = Iterators.repeated(Jlist)
     end
-    for (it,J) in enumerate(Rlist)
+    for (it,J) in enumerate(Jlist)
         verbose && @info "it = $it J = $J"
         @assert length(w) == size(dd, 2)
         h0 = hash(dd)
