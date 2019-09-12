@@ -92,6 +92,23 @@ function init_centroid_unif(data::Matrix{Float64}, k::Int; w = nothing)
     return centr
 end
 
+
+function compute_costs_one!(costs::Vector{Float64}, data::Matrix{Float64}, x::Vector{Float64})
+    m, n = size(data)
+    @assert length(costs) == n
+    @assert length(x) == m
+
+    @inbounds for i = 1:n
+        v = 0.0
+        @simd for l = 1:m
+            v += (data[l,i] - x[l])^2
+        end
+        costs[i] = v
+    end
+    return costs
+end
+compute_costs_one(data::Matrix{Float64}, x::Vector{Float64}) = compute_costs_one!(Array{Float64}(undef,size(data,2)), data, x)
+
 # This function was first written from scratch from the k-means++ paper, then improved after reading
 # the corresponding scikit-learn's code at https://github.com/scikit-learn/scikit-learn, then heavily modified.
 # The scikit-learn's version was first coded by Jan Schlueter as a port of some other code that is now lost.
@@ -107,10 +124,11 @@ function init_centroid_pp(pool::Matrix{Float64}, k::Int; ncandidates = nothing, 
 
     centr = zeros(m, k)
     i = sample(1:np, Weights(w))
-    centr[:,1] .= pool[:,i]
+    pooli = pool[:,i]
+    centr[:,1] .= pooli
 
-    costs = sum((data .- centr[:,1]).^2, dims=1)
-    pcosts = dataispool ? costs : sum((pool .- centr[:,1]).^2, dims=1)
+    costs = compute_costs_one(data, pooli)
+    pcosts = dataispool ? costs : compute_costs_one(pool, pooli)
 
     curr_cost = sum(costs)
     c = ones(Int, n)
@@ -119,17 +137,22 @@ function init_centroid_pp(pool::Matrix{Float64}, k::Int; ncandidates = nothing, 
     new_costs_best, new_c_best = similar(costs), similar(c)
     new_pcosts_best = dataispool ? new_costs_best : similar(pcosts)
     for j = 2:k
-        candidates = [sample(1:np, Weights(vec(pcosts) .* w)) for _ = 1:ncandidates]
+        pw = Weights(pcosts .* w)
+        candidates = [sample(1:np, pw) for _ = 1:ncandidates]
         cost_best = Inf
         i_best = 0
         for i in candidates
             new_c .= c
-            new_costs .= sum((data .- pool[:,i]).^2, dims=1)
-            for l = 1:n
-                if new_costs[l] < costs[l]
-                    new_c[l] = j
-                else
-                    new_costs[l] = costs[l]
+            pooli = pool[:,i]
+            new_costs .= costs
+            @inbounds for i1 = 1:n
+                v = 0.0
+                @simd for l = 1:m
+                    v += (data[l,i1] - pooli[l])^2
+                end
+                if v < costs[i1]
+                    new_c[i1] = j
+                    new_costs[i1] = v
                 end
             end
             cost = sum(new_costs)
@@ -138,7 +161,7 @@ function init_centroid_pp(pool::Matrix{Float64}, k::Int; ncandidates = nothing, 
                 i_best = i
                 new_costs_best .= new_costs
                 if !dataispool
-                    new_pcosts_best .= min.(pcosts, sum((pool .- pool[:,i]).^2, dims=1))
+                    new_pcosts_best .= min.(pcosts, compute_costs_one(pool, pooli))
                 end
                 new_c_best .= new_c
             end
