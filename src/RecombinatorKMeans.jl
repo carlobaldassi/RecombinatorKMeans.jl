@@ -7,20 +7,35 @@ using Distributed
 
 export kmeans, reckmeans
 
-let cdict = Dict{NTuple{3,Int},Array{Float64,3}}()
+let costsdict = Dict{Int,Matrix{Float64}}(),
+    countdict = Dict{Int,Vector{Float64}}()
     global function get_costs!(c, data, centroids)
         m, n = size(data)
         k = size(centroids, 2)
         @assert size(centroids, 1) == m
 
-        cache = get!(cdict, (m, k, n)) do
-            zeros(m, k, n)
+        costs = get!(costsdict, n) do
+            zeros(1, n)
         end
 
-        cache .= (reshape(data, (m, 1, n)) .- centroids).^ 2
-        costs, cc = findmin(dropdims(sum(cache, dims=1), dims=1), dims=1)
-        @assert all(x->1 ≤ x[1] ≤ k, vec(cc))
-        c .= map(x->x[1], vec(cc))
+        fill!(c, 1)
+        @inbounds for i = 1:n
+            v = Inf
+            x = 0
+            for j = 1:k
+                v1 = 0.0
+                @simd for l = 1:m
+                    v1 += (data[l,i] - centroids[l,j])^2
+                end
+                if v1 < v
+                    v = v1
+                    x = j
+                end
+            end
+            costs[i] = v
+            c[i] = x
+        end
+
         return costs
     end
 
@@ -30,23 +45,40 @@ let cdict = Dict{NTuple{3,Int},Array{Float64,3}}()
         costs = get_costs!(c, data, centroids)
         return sum(costs)
     end
-    global function clear_cache!()
-        empty!(cdict)
-    end
-    global function getdict()
-        return cdict
-    end
-end
 
-function recompute_centroids!(c, data, centroids)
-    k = size(centroids, 2)
-    # TODO: optimize
-    for j = 1:k
-        msk = c .== j
-        any(msk) || continue
-        centroids[:,j] .= vec(mean(data[:,msk], dims=2))
+    global function recompute_centroids!(c, data, centroids)
+        m, n = size(data)
+        k = size(centroids, 2)
+        @assert size(centroids, 1) == m
+        @assert length(c) == n
+
+        count = get!(countdict, k) do
+            zeros(Int, k)
+        end
+
+        fill!(count, 0)
+        fill!(centroids, 0.0)
+        @inbounds for i = 1:n
+            j = c[i]
+            for l = 1:m
+                centroids[l,j] += data[l,i]
+            end
+            count[j] += 1
+        end
+        @inbounds for j = 1:k
+            z = count[j]
+            for l = 1:m
+                centroids[l,j] /= z
+            end
+        end
+
+        return centroids
     end
-    return centroids
+
+    global function clear_cache!()
+        empty!(costsdict)
+        empty!(countdict)
+    end
 end
 
 function init_centroid_unif(data::Matrix{Float64}, k::Int; w = nothing)
