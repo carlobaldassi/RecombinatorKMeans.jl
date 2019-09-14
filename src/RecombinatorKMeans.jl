@@ -7,7 +7,15 @@ using Distributed
 
 export kmeans, reckmeans
 
-let costsdict = Dict{Int,Matrix{Float64}}(),
+Base.@propagate_inbounds function _cost(d1, d2)
+    v1 = 0.0
+    @simd for l = 1:length(d1)
+        v1 += (d1[l] - d2[l])^2
+    end
+    return v1
+end
+
+let costsdict = Dict{Int,Vector{Float64}}(),
     countdict = Dict{Int,Vector{Float64}}()
     global function get_costs!(c, data, centroids)
         m, n = size(data)
@@ -15,7 +23,7 @@ let costsdict = Dict{Int,Matrix{Float64}}(),
         @assert size(centroids, 1) == m
 
         costs = get!(costsdict, n) do
-            zeros(1, n)
+            zeros(n)
         end
 
         fill!(c, 1)
@@ -23,10 +31,7 @@ let costsdict = Dict{Int,Matrix{Float64}}(),
             v = Inf
             x = 0
             for j = 1:k
-                v1 = 0.0
-                @simd for l = 1:m
-                    v1 += (data[l,i] - centroids[l,j])^2
-                end
+                @views v1 = _cost(data[:,i], centroids[:,j])
                 if v1 < v
                     v = v1
                     x = j
@@ -99,11 +104,7 @@ function compute_costs_one!(costs::Vector{Float64}, data::Matrix{Float64}, x::Ve
     @assert length(x) == m
 
     @inbounds for i = 1:n
-        v = 0.0
-        @simd for l = 1:m
-            v += (data[l,i] - x[l])^2
-        end
-        costs[i] = v
+        @views costs[i] = _cost(data[:,i], x)
     end
     return costs
 end
@@ -146,11 +147,8 @@ function init_centroid_pp(pool::Matrix{Float64}, k::Int; ncandidates = nothing, 
             pooli = pool[:,i]
             new_costs .= costs
             @inbounds for i1 = 1:n
-                v = 0.0
-                @simd for l = 1:m
-                    v += (data[l,i1] - pooli[l])^2
-                end
-                if v < costs[i1]
+                @views v = _cost(data[:,i1], pooli)
+                if v < new_costs[i1]
                     new_c[i1] = j
                     new_costs[i1] = v
                 end
