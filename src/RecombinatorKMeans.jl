@@ -360,4 +360,54 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
         allcosts)
 end
 
+
+function CI(true_centroids::Matrix{Float64}, centroids::Matrix{Float64})
+    m, tk = size(true_centroids)
+    @assert size(centroids, 1) == m
+    k = size(centroids, 2)
+
+    matched = falses(tk)
+    @inbounds for j = 1:k
+        v = Inf
+        p = 0
+        for tj = 1:tk
+            @views v1 = _cost(true_centroids[:,tj], centroids[:,j])
+            if v1 < v
+                v = v1
+                p = tj
+            end
+        end
+        matched[p] = true
+    end
+
+    return tk - count(matched)
+end
+
+# CI_sym(centroids1::Matrix{Float64}, centroids2::Matrix{Float64}) =
+#     max(CI(centroids1, centroids2), CI(centroids2, centroids1))
+
+function CI_sym(centroids1::Matrix{Float64}, centroids2::Matrix{Float64})
+    m, k1 = size(centroids1)
+    @assert size(centroids2, 1) == m
+    k2 = size(centroids2, 2)
+
+    a12 = zeros(Int, k1)
+    a21 = zeros(Int, k2)
+    v12 = fill(Inf, k1)
+    v21 = fill(Inf, k2)
+    @inbounds for j1 = 1:k1, j2 = 1:k2
+        @views v = _cost(centroids1[:,j1], centroids2[:,j2])
+        if v < v12[j1]
+            v12[j1] = v
+            a12[j1] = j2
+        end
+        if v < v21[j2]
+            v21[j2] = v
+            a21[j2] = j1
+        end
+    end
+
+    return max(k1 - length(BitSet(a12)), k2 - length(BitSet(a21)))
+end
+
 end # module
