@@ -95,11 +95,13 @@ function init_centroid_unif(data::Matrix{Float64}, k::Int; w = nothing)
         i = sample(1:n, Weights(w))
         centr[:,j] .= data[:,i]
     end
-    return centr
+    c = zeros(Int, size(data,2))
+    cost = assign_points!(c, data, centr)
+    return centr, c, cost
 end
 
 
-function compute_costs_one!(costs::Vector{Float64}, data::Matrix{Float64}, x::Vector{Float64})
+function compute_costs_one!(costs::Vector{Float64}, data::Matrix{Float64}, x::AbstractVector{<:Float64})
     m, n = size(data)
     @assert length(costs) == n
     @assert length(x) == m
@@ -109,7 +111,7 @@ function compute_costs_one!(costs::Vector{Float64}, data::Matrix{Float64}, x::Ve
     end
     return costs
 end
-compute_costs_one(data::Matrix{Float64}, x::Vector{Float64}) = compute_costs_one!(Array{Float64}(undef,size(data,2)), data, x)
+compute_costs_one(data::Matrix{Float64}, x::AbstractVector{<:Float64}) = compute_costs_one!(Array{Float64}(undef,size(data,2)), data, x)
 
 # This function was first written from scratch from the k-means++ paper, then improved after reading
 # the corresponding scikit-learn's code at https://github.com/scikit-learn/scikit-learn, then heavily modified.
@@ -137,10 +139,9 @@ function init_centroid_pp(pool::Matrix{Float64}, k::Int; ncandidates = nothing, 
 
     new_costs, new_c = similar(costs), similar(c)
     new_costs_best, new_c_best = similar(costs), similar(c)
-    new_pcosts_best = dataispool ? new_costs_best : similar(pcosts)
     for j = 2:k
         pw = Weights(pcosts .* w)
-        candidates = [sample(1:np, pw) for _ = 1:ncandidates]
+        candidates = sample(1:np, pw, min(ncandidates,np), replace = false)
         cost_best = Inf
         i_best = 0
         for i in candidates
@@ -159,21 +160,18 @@ function init_centroid_pp(pool::Matrix{Float64}, k::Int; ncandidates = nothing, 
                 cost_best = cost
                 i_best = i
                 new_costs_best .= new_costs
-                if !dataispool
-                    new_pcosts_best .= min.(pcosts, compute_costs_one(pool, pooli))
-                end
                 new_c_best .= new_c
             end
         end
         @assert i_best ≠ 0 && cost_best < Inf
         centr[:,j] .= pool[:,i_best]
         costs .= new_costs_best
-        if !dataispool
-            pcosts .= new_pcosts_best
+        if !dataispool && j < k
+            pcosts .= min.(pcosts, compute_costs_one(pool, @view(pool[:,i_best])))
         end
         c .= new_c_best
     end
-    return centr
+    return centr, c, sum(costs)
 end
 
 """
@@ -206,20 +204,19 @@ function kmeans(data::Matrix{Float64}, k::Integer;
 
     if init isa String
         if init == "++"
-            centroids = init_centroid_pp(data, k)
+            centroids, c, cost = init_centroid_pp(data, k)
         elseif init == "unif"
-            centroids = init_centroid_unif(data, k)
+            centroids, c, cost = init_centroid_unif(data, k)
         else
             throw(ArgumentError("unrecognized init string \"$init\"; should be \"++\" or \"unif\""))
         end
     else
         size(init) == (m, k) || throw(ArgumentError("invalid size of init, expected $((m,k)), found: $(size(init))"))
         centroids = init
+        c = zeros(Int, n)
+        cost = assign_points!(c, data, centroids)
     end
 
-    c = zeros(Int, n)
-
-    cost = assign_points!(c, data, centroids)
     verbose && println("initial cost = $cost")
 
     for it = 1:max_it
@@ -301,9 +298,7 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
         res = pmap(1:J) do a
             h = hash((seed, a), h0)
             Random.seed!(h)  # horrible hack to ensure determinism (not really required, only useful for experiments)
-            centr = init_centroid_pp(dd, k, w = w, data = data)
-            c = zeros(Int, n)
-            cost = assign_points!(c, data, centr)
+            centr, c, cost = init_centroid_pp(dd, k, w = w, data = data)
             while true
                 recompute_centroids!(c, data, centr)
                 new_cost = assign_points!(c, data, centr)
