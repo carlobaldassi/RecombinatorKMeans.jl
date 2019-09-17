@@ -72,6 +72,7 @@ let costsdict = Dict{Int,Vector{Float64}}(),
         end
         @inbounds for j = 1:k
             z = count[j]
+            z > 0 || continue
             for l = 1:m
                 centroids[l,j] /= z
             end
