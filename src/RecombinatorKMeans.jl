@@ -16,7 +16,7 @@ Base.@propagate_inbounds function _cost(d1, d2)
 end
 
 let costsdict = Dict{Int,Vector{Float64}}(),
-    countdict = Dict{Int,Vector{Float64}}()
+    countdict = Dict{Int,Vector{Int}}()
     global function get_costs!(c, data, centroids)
         m, n = size(data)
         k = size(centroids, 2)
