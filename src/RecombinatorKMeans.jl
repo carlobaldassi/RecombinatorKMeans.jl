@@ -329,7 +329,7 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
         w ./= sum(w)
         dd = hcat(centroidsR...)
         verbose && (@everywhere flush(stdout); println("  mean cost = $mean_cost best_cost = $best_cost"))
-        if mean_cost ≤ best_cost * (1 + tol)
+        if mean_cost ≤ batch_best_cost * (1 + tol)
             verbose && @info "collapsed"
             exit_status = :collapsed
             break
