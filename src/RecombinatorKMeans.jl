@@ -266,6 +266,7 @@ The possible keyword arguments are:
 * `verbose`: a `Bool`; if `true` (the default) it prints information on screen.
 * `keepalllosses`: a `Bool` (default=`false`); if `true`, the returned structure contains all the
   losses found during the iteration.
+  * `max_it`: an `Int` (default=typemax(Int)), maximum number of Lloyd (kmeans) iterations.
 
 If there are workers available this function will parallelize each batch.
 """
@@ -274,7 +275,8 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
                    seed::Union{Integer,Nothing} = nothing,
                    tol::Float64 = 1e-4,
                    verbose::Bool = true,
-                   keepalllosses::Bool = false
+                   keepalllosses::Bool = false,
+                   max_it::Int = typemax(Int)
                   )
     seed ≢ nothing && Random.seed!(seed)
     m, n = size(data)
@@ -299,7 +301,7 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
             h = hash((seed, a), h0)
             Random.seed!(h)  # horrible hack to ensure determinism (not really required, only useful for experiments)
             centr, c, cost = init_centroid_pp(dd, k, w = w, data = data)
-            while true
+            for ll_it = 1:max_it
                 recompute_centroids!(c, data, centr)
                 new_cost = assign_points!(c, data, centr)
                 new_cost == cost && break
