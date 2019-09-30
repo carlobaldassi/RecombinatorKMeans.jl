@@ -159,14 +159,16 @@ function init_centroid_pp(pool::Matrix{Float64}, k::Int; ncandidates = nothing, 
             if cost < cost_best
                 cost_best = cost
                 i_best = i
-                new_costs_best .= new_costs
-                new_c_best .= new_c
+                new_costs_best, new_costs = new_costs, new_costs_best
+                new_c_best, new_c = new_c, new_c_best
             end
         end
         @assert i_best ≠ 0 && cost_best < Inf
         centr[:,j] .= pool[:,i_best]
-        costs .= new_costs_best
-        if !dataispool && j < k
+        costs, new_costs_best = new_costs_best, costs
+        if dataispool
+            pcosts = costs
+        elseif j < k
             pcosts .= min.(pcosts, compute_costs_one(pool, @view(pool[:,i_best])))
         end
         c .= new_c_best
@@ -284,7 +286,7 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
     best_cost = Inf
     best_centr = Matrix{Float64}(undef, m, k)
 
-    dd = copy(data)
+    dd = data
     w = ones(size(dd, 2))
     old_mean_cost = Inf
     old_best_cost = Inf
