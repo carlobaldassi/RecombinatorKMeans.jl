@@ -71,3 +71,51 @@ end
     @test res.all_costs ≡ nothing
     rmprocs(addwrk...)
 end
+
+@testset "kmeansRS" begin
+    res = kmeans_randswap(a3, k, max_it = 1_000, verbose=false)
+    @test res.exit_status == :maxiters
+    @test length(res.labels) == m
+    @test all(∈(1:k), res.labels)
+    @test size(res.centroids) == (2,k)
+    @test 6.7 < res.cost < 7.5
+    @test res.iters == 1_000
+    @test res.all_costs ≡ nothing
+    @test res.all_times ≡ nothing
+
+    res = kmeans_randswap(a3, k, max_it = 1_000, verbose=false, keepallcosts=true)
+    @test res.exit_status == :maxiters
+    @test length(res.labels) == m
+    @test all(∈(1:k), res.labels)
+    @test size(res.centroids) == (2,k)
+    @test 6.7 < res.cost < 7.5
+    @test res.iters == 1_000
+    @test res.all_costs isa Vector{Float64}
+    @test res.all_times isa Vector{Float64}
+    @test issorted(res.all_costs, rev=true)
+    @test issorted(res.all_times)
+    @test all(res.all_costs) do vl
+        all(6.7 .< vl .< 20)
+    end
+    @test res.all_times[end] == res.time
+
+    res = kmeans_randswap(a3, k, max_time = 3.0, max_it = typemax(Int), verbose=false)
+    @test res.exit_status == :outoftime
+    @test length(res.labels) == m
+    @test all(∈(1:k), res.labels)
+    @test size(res.centroids) == (2,k)
+    @test 6.7 < res.cost < 7.5
+    @test res.time ≥ 3.0
+    @test res.all_costs ≡ nothing
+    @test res.all_times ≡ nothing
+
+    res = kmeans_randswap(a3, k, target_cost = 7.0, max_it = typemax(Int), verbose=false)
+    @test res.exit_status == :solved
+    @test length(res.labels) == m
+    @test all(∈(1:k), res.labels)
+    @test size(res.centroids) == (2,k)
+    @test 6.7 < res.cost ≤ 7.0
+    @test res.all_costs ≡ nothing
+    @test res.all_times ≡ nothing
+
+end

@@ -5,7 +5,7 @@ using SparseArrays
 using Random
 using Distributed
 
-export kmeans, reckmeans
+export kmeans, reckmeans, kmeans_randswap
 
 Base.@propagate_inbounds function _cost(d1, d2)
     v1 = 0.0
@@ -373,6 +373,136 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
         centroidsC,
         costC,
         allcosts)
+end
+
+struct ResultsKMeansRS
+    exit_status::Symbol
+    labels::Vector{Int}
+    centroids::Matrix{Float64}
+    cost::Float64
+    time::Float64
+    iters::Int
+    all_costs::Union{Nothing,Vector{Float64}}
+    all_times::Union{Nothing,Vector{Float64}}
+end
+
+
+function kmeans_randswap(data::Matrix{Float64}, k::Integer;
+                         max_it::Integer = 1000,
+                         max_time::Float64 = Inf,
+                         target_cost::Float64 = 0.0,
+                         seed::Union{Integer,Nothing} = nothing,
+                         ll_max_it::Integer = 2,
+                         ll_tol::Float64 = 1e-5,
+                         init::Union{String,Matrix{Float64}} = "++",
+                         keepallcosts::Bool = false,
+                         verbose::Bool = true
+                        )
+    seed ≢ nothing && Random.seed!(seed)
+    m, n = size(data)
+
+    t0 = time()
+
+    if init isa String
+        if init == "++"
+            centroids, c, costs, cost = init_centroid_pp(data, k)
+        elseif init == "unif"
+            centroids, c, costs, cost = init_centroid_unif(data, k)
+        else
+            throw(ArgumentError("unrecognized init string \"$init\"; should be \"++\" or \"unif\""))
+        end
+    else
+        size(init) == (m, k) || throw(ArgumentError("invalid size of init, expected $((m,k)), found: $(size(init))"))
+        centroids = init
+        c = zeros(Int, n)
+        costs = get_costs!(c, data, centroids)
+        cost = sum(costs)
+    end
+
+    verbose && @info "initial cost = $cost"
+    allcosts = keepallcosts ? Float64[cost] : nothing
+    alltimes = keepallcosts ? Float64[time() - t0] : nothing
+    exit_status = :running
+    new_centroids, new_c, new_costs = similar(centroids), similar(c), similar(costs)
+    it = 0
+    for outer it = 1:max_it
+        new_centroids .= centroids
+        new_c .= c
+        new_costs .= costs
+        j = rand(1:k)
+        i = rand(1:n)
+        xi = data[:,i]
+        new_centroids[:,j] = xi
+
+        msk = (c .== j)
+        inds = findall(msk)
+        c_msk = zeros(Int, length(inds))
+        costs_msk = get_costs!(c_msk, data, new_centroids, inds)
+        i_msk = 0
+        @inbounds for i1 = 1:n
+            if msk[i1]
+                i_msk += 1
+                new_costs[i1] = costs_msk[i_msk]
+                new_c[i1] = c_msk[i_msk]
+            else
+                @views v = _cost(data[:,i1], xi)
+                if v < new_costs[i1]
+                    new_costs[i1] = v
+                    new_c[i1] = j
+                end
+            end
+        end
+        new_cost = sum(new_costs)
+
+        for ll_it = 1:ll_max_it
+            recompute_centroids!(new_c, data, new_centroids)
+            new_costs = get_costs!(new_c, data, new_centroids)
+            new_cost2 = sum(new_costs)
+            if new_cost2 ≥ new_cost * (1 - ll_tol)
+                new_cost = new_cost2
+                break
+            end
+            new_cost = new_cost2
+        end
+        if new_cost < cost
+            cost = new_cost
+            centroids, new_centroids = new_centroids, centroids
+            c, new_c = new_c, c
+            costs, new_costs = new_costs, costs
+            t = time() - t0
+            verbose && println("it = $it cost = $cost time = $t")
+            if keepallcosts
+                append!(allcosts, cost)
+                append!(alltimes, t)
+            end
+        end
+        if cost ≤ target_cost
+            exit_status = :solved
+            verbose && @info "target_cost achieved"
+            break
+        end
+        if time() - t0 ≥ max_time
+            exit_status = :outoftime
+            verbose && @info "max_time reached"
+            break
+        end
+    end
+    exit_status == :running && (exit_status = :maxiters)
+    t = time() - t0
+    verbose && @info "final cost = $cost time = $t"
+    if keepallcosts
+        append!(allcosts, cost)
+        append!(alltimes, t)
+    end
+    return ResultsKMeansRS(
+        exit_status,
+        c,
+        centroids,
+        cost,
+        t,
+        it,
+        allcosts,
+        alltimes)
 end
 
 
