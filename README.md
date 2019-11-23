@@ -1,7 +1,7 @@
 # RecombinatorKMeans.jl
 
 This code implements the recombinator-k-means method described in the paper
-*"Recombinator-k-means: Enhancing k-means++ by seeding from pools of previous runs"* by C. Baldassi
+&"Recombinator-k-means: A population based algorithm that exploits k-means++ for recombination"* by C. Baldassi
 submitted for publication, (2019) ([arXiv][RKMarXiv]).
 
 The code is written in [Julia]. It requires Julia 1.0 or later.
@@ -12,11 +12,16 @@ it only works with data stored in dense `Float64` matrices, and it only uses the
 distance as a metric. It also tries to reduce the number of options at a minimum. It's also
 somewhat liberal in terms of memory usage (particularly if you run it in parallel).
 
-It provides two main methods, which are exported from the package:
+It provides three main optimization methods, which are exported from the package:
 
 * `kmeans` is a standard implementation of Lloyd's algorithm for k-means; it can use either uniform
   of k-means++ initialization (the latter in the improved version that is also used by scikit-learn)
 * `reckmeans` is the recombinator-k-means method described in the paper
+* `kmeans_randswap` is the random swap algorithm proposed in [this paper](https://link.springer.com/article/10.1186/s40537-018-0122-y)
+
+It also provides two functions to compute the centroid index as defined in
+[this paper](https://link.springer.com/article/10.1186/s40537-018-0122-y), an
+asymmetric one called `CI` and a symmetric one called `CI_sym`. These are not exported.
 
 ### Installation and setup
 
@@ -53,7 +58,7 @@ The format of the data must be a `Matrix{Float64}` with the data points organize
 (Typically, this means that if you're reading a dataset you'll need to transpose it. See for
 example the `runfile.jl` script in the `test` directory.)
 
-These two functions are available once you load the package: `kmeans` and `reckmeans`. You
+These three functions are available once you load the package: `kmeans`, `reckmeans` and `kmeans_randswap`. You
 can use the Julia help (press the <kbd>?</kbd> key in the REPL) to see their documentation.
 
 The `reckmeans` function will run in parallel if there are workers available. However, the code
@@ -77,9 +82,9 @@ After this `using RecombinatorKMeans` should work and `reckmeans` should run in 
 
 ### Reproducing the results in the paper
 
-For the purpose of complete reproducibility, you can check out the tag `paper-v1` of the repository,
+For the purpose of complete reproducibility, you can check out the tag `paper-v2` of the repository,
 which will get you the version of the code used to collect the results in the [paper][RKMarXiv].
-Also, the repository includes a file "Manifest_20190429.toml" that specifies the exact version of the
+Also, the repository includes a file "Manifest_20191123.toml" that specifies the exact version of the
 dependencies that were used. You can use it to overwrite your "Manifest.toml" file and then call
 `instantiate` in pkg mode to reproduce the same environment.
 
