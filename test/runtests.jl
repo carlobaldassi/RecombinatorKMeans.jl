@@ -35,16 +35,16 @@ end
 end
 
 @testset "reckmeans" begin
-    res = reckmeans(a3, k, 5, β = 5.0, verbose=false)
-    @test res.exit_status ∈ [:collapsed, :didntimprove]
+    res = reckmeans(a3, k, 5, dβ = 0.1, verbose=false)
+    @test res.exit_status == :collapsed
     @test length(res.labels) == m
     @test all(∈(1:k), res.labels)
     @test size(res.centroids) == (2,k)
     @test 6.7 < res.cost < 7.5
     @test res.all_costs ≡ nothing
 
-    res = reckmeans(a3, k, 5, β = 5.0, verbose=false, keepallcosts=true)
-    @test res.exit_status ∈ [:collapsed, :didntimprove]
+    res = reckmeans(a3, k, 5, dβ = 0.1, verbose=false, keepallcosts=true)
+    @test res.exit_status == :collapsed
     @test length(res.labels) == m
     @test all(∈(1:k), res.labels)
     @test size(res.centroids) == (2,k)
@@ -62,8 +62,8 @@ end
         Pkg.activate(joinpath(@__DIR__, ".."))
         using RecombinatorKMeans
     end
-    res = reckmeans(a3, k, 5, β = 5.0, verbose=false)
-    @test res.exit_status ∈ [:collapsed, :didntimprove]
+    res = reckmeans(a3, k, 5, dβ = 0.1, verbose=false)
+    @test res.exit_status == :collapsed
     @test length(res.labels) == m
     @test all(∈(1:k), res.labels)
     @test size(res.centroids) == (2,k)

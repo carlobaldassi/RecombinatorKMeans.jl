@@ -17,19 +17,21 @@ end
 
 let costsdict = Dict{Int,Vector{Float64}}(),
     countdict = Dict{Int,Vector{Int}}()
-    global function get_costs!(c, data, centroids)
+    global function get_costs!(c::Vector{Int}, data::Matrix{Float64}, centroids::Matrix{Float64}, inds = nothing)
         m, n = size(data)
         k = size(centroids, 2)
         @assert size(centroids, 1) == m
+        inds = (inds ≡ nothing ? (1:n) : inds)
+        nr = length(inds)
 
-        costs = get!(costsdict, n) do
-            zeros(n)
+        costs = get!(costsdict, nr) do
+            zeros(nr)
         end
 
         fill!(c, 1)
-        @inbounds for i = 1:n
-            v = Inf
-            x = 0
+        i1 = 1
+        @inbounds for i = inds
+            v, x = Inf, 0
             for j = 1:k
                 @views v1 = _cost(data[:,i], centroids[:,j])
                 if v1 < v
@@ -37,8 +39,8 @@ let costsdict = Dict{Int,Vector{Float64}}(),
                     x = j
                 end
             end
-            costs[i] = v
-            c[i] = x
+            costs[i1], c[i1] = v, x
+            i1 += 1
         end
 
         return costs
@@ -96,8 +98,8 @@ function init_centroid_unif(data::Matrix{Float64}, k::Int; w = nothing)
         centr[:,j] .= data[:,i]
     end
     c = zeros(Int, size(data,2))
-    cost = assign_points!(c, data, centr)
-    return centr, c, cost
+    costs = get_costs!(c, data, centr)
+    return centr, c, costs, sum(costs)
 end
 
 
@@ -171,9 +173,9 @@ function init_centroid_pp(pool::Matrix{Float64}, k::Int; ncandidates = nothing, 
         elseif j < k
             pcosts .= min.(pcosts, compute_costs_one(pool, @view(pool[:,i_best])))
         end
-        c .= new_c_best
+        c, new_c_best = new_c_best, c
     end
-    return centr, c, sum(costs)
+    return centr, c, costs, sum(costs)
 end
 
 """
@@ -208,9 +210,9 @@ function kmeans(data::Matrix{Float64}, k::Integer;
 
     if init isa String
         if init == "++"
-            centroids, c, cost = init_centroid_pp(data, k)
+            centroids, c, _, cost = init_centroid_pp(data, k)
         elseif init == "unif"
-            centroids, c, cost = init_centroid_unif(data, k)
+            centroids, c, _, cost = init_centroid_unif(data, k)
         else
             throw(ArgumentError("unrecognized init string \"$init\"; should be \"++\" or \"unif\""))
         end
@@ -271,11 +273,12 @@ It returns an object of type `ResultsRecKMeans`, which contains the following fi
 
 The possible keyword arguments are:
 
-* `β`: a `Float64` (default=7.5), the reweigting parameter (only makes sense if non-negative)
+* `dβ`: a `Float64` (default=0.1), the reweigting parameter increment (only makes sense if
+  non-negative)
 * `seed`: random seed, either an integer or `nothing` (this is the default, it means no seeding
   is performed).
 * `tol`: a `Float64` (default=1e-4), the relative tolerance for determining whether the solutions
-  have collapsed or have stopped improving
+  have collapsed
 * `verbose`: a `Bool`; if `true` (the default) it prints information on screen.
 * `keepallcosts`: a `Bool` (default=`false`); if `true`, the returned structure contains all the
   costs found during the iteration.
@@ -285,7 +288,7 @@ The possible keyword arguments are:
 If there are workers available this function will parallelize each batch.
 """
 function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
-                   β = 7.5,
+                   dβ::Float64 = 0.1,
                    seed::Union{Integer,Nothing} = nothing,
                    tol::Float64 = 1e-4,
                    lltol::Float64 = 1e-5,
@@ -296,13 +299,12 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
     seed ≢ nothing && Random.seed!(seed)
     m, n = size(data)
 
+    β = 0.0
     best_cost = Inf
     best_centr = Matrix{Float64}(undef, m, k)
 
-    dd = data
-    w = ones(size(dd, 2))
-    old_mean_cost = Inf
-    old_best_cost = Inf
+    pool = data
+    w = ones(size(pool, 2))
     allcosts = keepallcosts ? Vector{Float64}[] : nothing
     exit_status = :running
     if Jlist isa Int
@@ -310,12 +312,12 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
     end
     for (it,J) in enumerate(Jlist)
         verbose && @info "it = $it J = $J"
-        @assert length(w) == size(dd, 2)
-        h0 = hash(dd)
+        @assert length(w) == size(pool, 2)
+        h0 = hash(pool)
         res = pmap(1:J) do a
             h = hash((seed, a), h0)
             Random.seed!(h)  # horrible hack to ensure determinism (not really required, only useful for experiments)
-            centr, c, cost = init_centroid_pp(dd, k, w = w, data = data)
+            centr, c, _, cost = init_centroid_pp(pool, k, w = w, data = data)
             for ll_it = 1:max_it
                 recompute_centroids!(c, data, centr)
                 new_cost = assign_points!(c, data, centr)
@@ -328,34 +330,31 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
             verbose && println("  a = $a cost = $cost")
             return centr, cost
         end
-        centroidsR = [r[1] for r in res]
-        costs = [r[2] for r in res]
-        keepallcosts && push!(allcosts, costs)
-        batch_best_cost, a_opt = findmin(costs)
-        if batch_best_cost < best_cost
-            best_cost = batch_best_cost
-            best_centr .= centroidsR[a_opt]
+        centroidsR = Matrix{Float64}[r[1] for r in res]
+        costs = Float64[r[2] for r in res]
+        perm = sortperm(costs)
+        centroidsR = centroidsR[perm[1:J]]
+        costs = costs[perm[1:J]]
+
+        keepallcosts && push!(allcosts, copy(costs))
+        if costs[1] < best_cost
+            best_cost = costs[1]
+            best_centr .= centroidsR[1]
         end
         resize!(w, J*k)
+        β += dβ
         mean_cost = mean(costs)
         for a = 1:J
-            w[(1:k) .+ (a-1)*k] .= exp(-β * ((costs[a] - batch_best_cost) / (mean_cost - batch_best_cost)))
+            w[(1:k) .+ (a-1)*k] .= exp(-β * ((costs[a] - best_cost) / (mean_cost - best_cost)))
         end
         w ./= sum(w)
-        dd = hcat(centroidsR...)
+        pool = hcat(centroidsR...)
         verbose && (@everywhere flush(stdout); println("  mean cost = $mean_cost best_cost = $best_cost"))
-        if mean_cost ≤ batch_best_cost * (1 + tol)
+        if mean_cost ≤ best_cost * (1 + tol)
             verbose && @info "collapsed"
             exit_status = :collapsed
             break
         end
-        if mean_cost ≥ old_mean_cost * (1 - tol) && best_cost ≥ old_best_cost * (1 - tol)
-            verbose && @info "cost didn't decrease by at least $tol, giving up"
-            exit_status = :didntimprove
-            break
-        end
-        old_mean_cost = mean_cost
-        old_best_cost = best_cost
     end
     exit_status == :running && (exit_status = :maxiters)
     cC = zeros(Int, n)
