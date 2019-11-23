@@ -182,7 +182,7 @@ end
 Runs k-means using Lloyd's algorithm on the given data matrix (if the size is `d`×`n` then `d` is
 the dimension and `n` the number of points, i.e. data is organized by column).
 It returns: 1) a vector of labels (`n` integers from 1 to `k`); 2) a `d`×`k` matrix of centroids;
-3) the final loss
+3) the final cost
 
 The possible keyword arguments are:
 
@@ -193,12 +193,14 @@ The possible keyword arguments are:
 * `init`: how to initialize (default=`"++"`). It can be a string or a `Matrix{Float64}`. If it's
   a matrix, it represents the initial centroids (by column). If it is a string, it can be either
   `"++"` for k-means++ initialization, or `"unif"` for uniform.
+* `tol`: a `Float64`, relative tolerance for detecting convergence (default=1e-5).
 * `verbose`: a `Bool`; if `true` (the default) it prints information on screen.
 """
 function kmeans(data::Matrix{Float64}, k::Integer;
                 max_it::Integer = 1000,
                 seed::Union{Integer,Nothing} = nothing,
                 init::Union{String,Matrix{Float64}} = "++",
+                tol::Float64 = 1e-5,
                 verbose::Bool = true
                )
     seed ≢ nothing && Random.seed!(seed)
@@ -221,13 +223,22 @@ function kmeans(data::Matrix{Float64}, k::Integer;
 
     verbose && println("initial cost = $cost")
 
-    for it = 1:max_it
+    converged = false
+    it = 0
+    for outer it = 1:max_it
         recompute_centroids!(c, data, centroids)
         new_cost = assign_points!(c, data, centroids)
-        new_cost == cost && break
+        if new_cost ≥ cost * (1 - tol)
+            cost = new_cost
+            converged = true
+            break
+        end
         cost = new_cost
         verbose && println("it = $it cost = $cost")
     end
+    verbose && println("final cost = $cost (" *
+                       (converged ? "converged" : "did not converge") *
+                       " in $it iterations)")
     return c, centroids, cost
 end
 
@@ -235,8 +246,8 @@ struct ResultsRecKMeans
     exit_status::Symbol
     labels::Vector{Int}
     centroids::Matrix{Float64}
-    loss::Float64
-    all_losses::Union{Nothing,Vector{Vector{Float64}}}
+    cost::Float64
+    all_costs::Union{Nothing,Vector{Vector{Float64}}}
 end
 
 """
@@ -254,9 +265,9 @@ It returns an object of type `ResultsRecKMeans`, which contains the following fi
   values, `:collapsed`, `:didntimprove` or `:maxiters`.
 * labels: a vector of labels (`n` integers from 1 to `k`)
 * centroids: a `d`×`k` matrix of centroids
-* loss: the final loss
-* all_losses: either `nothing`, or a vector of vectors of all the losses found during the
-  iteration (one vector per batch), depending on the value of the `keepalllosses` option.
+* cost: the final cost
+* all_costs: either `nothing`, or a vector of vectors of all the costs found during the
+  iteration (one vector per batch), depending on the value of the `keepallcosts` option.
 
 The possible keyword arguments are:
 
@@ -266,9 +277,10 @@ The possible keyword arguments are:
 * `tol`: a `Float64` (default=1e-4), the relative tolerance for determining whether the solutions
   have collapsed or have stopped improving
 * `verbose`: a `Bool`; if `true` (the default) it prints information on screen.
-* `keepalllosses`: a `Bool` (default=`false`); if `true`, the returned structure contains all the
-  losses found during the iteration.
-  * `max_it`: an `Int` (default=typemax(Int)), maximum number of Lloyd (kmeans) iterations.
+* `keepallcosts`: a `Bool` (default=`false`); if `true`, the returned structure contains all the
+  costs found during the iteration.
+* `max_it`: an `Int` (default=typemax(Int)), maximum number of Lloyd (kmeans) iterations.
+* `lltol`: a `Float64` (default=1e-5), relative tolerance for Lloyd (kmeans) convergence.
 
 If there are workers available this function will parallelize each batch.
 """
@@ -276,8 +288,9 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
                    β = 7.5,
                    seed::Union{Integer,Nothing} = nothing,
                    tol::Float64 = 1e-4,
+                   lltol::Float64 = 1e-5,
                    verbose::Bool = true,
-                   keepalllosses::Bool = false,
+                   keepallcosts::Bool = false,
                    max_it::Int = typemax(Int)
                   )
     seed ≢ nothing && Random.seed!(seed)
@@ -290,7 +303,7 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
     w = ones(size(dd, 2))
     old_mean_cost = Inf
     old_best_cost = Inf
-    allcosts = keepalllosses ? Vector{Float64}[] : nothing
+    allcosts = keepallcosts ? Vector{Float64}[] : nothing
     exit_status = :running
     if Jlist isa Int
         Jlist = Iterators.repeated(Jlist)
@@ -306,7 +319,10 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
             for ll_it = 1:max_it
                 recompute_centroids!(c, data, centr)
                 new_cost = assign_points!(c, data, centr)
-                new_cost == cost && break
+                if new_cost ≥ cost * (1 - lltol)
+                    cost = new_cost
+                    break
+                end
                 cost = new_cost
             end
             verbose && println("  a = $a cost = $cost")
@@ -314,7 +330,7 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
         end
         centroidsR = [r[1] for r in res]
         costs = [r[2] for r in res]
-        keepalllosses && push!(allcosts, costs)
+        keepallcosts && push!(allcosts, costs)
         batch_best_cost, a_opt = findmin(costs)
         if batch_best_cost < best_cost
             best_cost = batch_best_cost

@@ -19,19 +19,19 @@ n, m = size(a3)
 k = 50
 
 @testset "kmeans uniform" begin
-    labels, centroids, loss = kmeans(a3, k, init="unif", verbose=false)
+    labels, centroids, cost = kmeans(a3, k, init="unif", verbose=false)
     @test length(labels) == m
     @test all(∈(1:k), labels)
     @test size(centroids) == (2,k)
-    @test 7 < loss < 25
+    @test 7 < cost < 25
 end
 
 @testset "kmeans++" begin
-    labels, centroids, loss = kmeans(a3, k, init="++", verbose=false)
+    labels, centroids, cost = kmeans(a3, k, init="++", verbose=false)
     @test length(labels) == m
     @test all(∈(1:k), labels)
     @test size(centroids) == (2,k)
-    @test 6.7 < loss < 11
+    @test 6.7 < cost < 11
 end
 
 @testset "reckmeans" begin
@@ -40,17 +40,17 @@ end
     @test length(res.labels) == m
     @test all(∈(1:k), res.labels)
     @test size(res.centroids) == (2,k)
-    @test 6.7 < res.loss < 7.5
-    @test res.all_losses ≡ nothing
+    @test 6.7 < res.cost < 7.5
+    @test res.all_costs ≡ nothing
 
-    res = reckmeans(a3, k, 5, β = 5.0, verbose=false, keepalllosses=true)
+    res = reckmeans(a3, k, 5, β = 5.0, verbose=false, keepallcosts=true)
     @test res.exit_status ∈ [:collapsed, :didntimprove]
     @test length(res.labels) == m
     @test all(∈(1:k), res.labels)
     @test size(res.centroids) == (2,k)
-    @test 6.7 < res.loss < 7.5
-    @test res.all_losses isa Vector{Vector{Float64}}
-    @test all(res.all_losses) do vl
+    @test 6.7 < res.cost < 7.5
+    @test res.all_costs isa Vector{Vector{Float64}}
+    @test all(res.all_costs) do vl
         all(6.7 .< vl .< 11)
     end
 end
@@ -67,7 +67,7 @@ end
     @test length(res.labels) == m
     @test all(∈(1:k), res.labels)
     @test size(res.centroids) == (2,k)
-    @test 6.7 < res.loss < 7.5
-    @test res.all_losses ≡ nothing
+    @test 6.7 < res.cost < 7.5
+    @test res.all_costs ≡ nothing
     rmprocs(addwrk...)
 end
