@@ -306,6 +306,8 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
     pool = data
     w = ones(size(pool, 2))
     allcosts = keepallcosts ? Vector{Float64}[] : nothing
+    centroidsR = Matrix{Float64}[]
+    costs = Float64[]
     exit_status = :running
     if Jlist isa Int
         Jlist = Iterators.repeated(Jlist)
@@ -330,8 +332,8 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
             verbose && println("  a = $a cost = $cost")
             return centr, cost
         end
-        centroidsR = Matrix{Float64}[r[1] for r in res]
-        costs = Float64[r[2] for r in res]
+        append!(centroidsR, (r[1] for r in res))
+        append!(costs, (r[2] for r in res))
         perm = sortperm(costs)
         centroidsR = centroidsR[perm[1:J]]
         costs = costs[perm[1:J]]
