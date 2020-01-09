@@ -1,7 +1,7 @@
 # RecombinatorKMeans.jl
 
 This code implements the recombinator-k-means method described in the paper
-&"Recombinator-k-means: A population based algorithm that exploits k-means++ for recombination"* by C. Baldassi
+*"Recombinator-k-means: A population based algorithm that exploits k-means++ for recombination"* by C. Baldassi
 submitted for publication, (2019) ([arXiv][RKMarXiv]).
 
 The code is written in [Julia]. It requires Julia 1.0 or later.
