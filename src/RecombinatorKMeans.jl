@@ -143,7 +143,8 @@ function init_centroid_pp(pool::Matrix{Float64}, k::Int; ncandidates = nothing, 
     new_costs_best, new_c_best = similar(costs), similar(c)
     for j = 2:k
         pw = Weights(pcosts .* w)
-        candidates = sample(1:np, pw, min(ncandidates,np), replace = false)
+        nonz = count(pw .≠ 0)
+        candidates = sample(1:np, pw, min(ncandidates,np,nonz), replace = false)
         cost_best = Inf
         i_best = 0
         for i in candidates
