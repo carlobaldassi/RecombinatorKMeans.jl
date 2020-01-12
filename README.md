@@ -99,4 +99,4 @@ The scikit-learn's version was first coded by Jan Schlueter as a port of some ot
 [Julia]: https://julialang.org
 [RKMarXiv]: https://arxiv.org/abs/1905.00531
 [km++]: https://scholar.google.com/scholar?cluster=16794944444927209316
-[sklearnkmeans]: https://github.com/scikit-learn/scikit-learn/blob/master/sklearn/cluster/k_means_.py
+[sklearnkmeans]: https://github.com/scikit-learn/scikit-learn/blob/master/sklearn/cluster/_kmeans.py
