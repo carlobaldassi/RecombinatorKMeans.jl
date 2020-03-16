@@ -17,11 +17,14 @@ It provides three main optimization methods, which are exported from the package
 * `kmeans` is a standard implementation of Lloyd's algorithm for k-means; it can use either uniform
   of k-means++ initialization (the latter in the improved version that is also used by scikit-learn)
 * `reckmeans` is the recombinator-k-means method described in the paper
-* `kmeans_randswap` is the random swap algorithm proposed in [this paper](https://link.springer.com/article/10.1186/s40537-018-0122-y)
+* `kmeans_randswap` is the random swap algorithm proposed in [this paper][RS]
 
-It also provides two functions to compute the centroid index as defined in
-[this paper](https://link.springer.com/article/10.1186/s40537-018-0122-y), an
+It also provides two functions to compute the centroid index as defined in [this paper][CI], an
 asymmetric one called `CI` and a symmetric one called `CI_sym`. These are not exported.
+
+It also provides a afunction to compute the variation of information metric to quantify the
+distance between two partitions as defined in [this paper][VI]. The function is called `VI` and is
+not exported.
 
 ### Installation and setup
 
@@ -100,3 +103,6 @@ The scikit-learn's version was first coded by Jan Schlueter as a port of some ot
 [RKMarXiv]: https://arxiv.org/abs/1905.00531
 [km++]: https://scholar.google.com/scholar?cluster=16794944444927209316
 [sklearnkmeans]: https://github.com/scikit-learn/scikit-learn/blob/master/sklearn/cluster/_kmeans.py
+[RS]: https://link.springer.com/article/10.1186/s40537-018-0122-y
+[CI]: https://www.sciencedirect.com/science/article/abs/pii/S0031320314001150
+[VI]: https://www.sciencedirect.com/science/article/pii/S0047259X06002016?via%3Dihub

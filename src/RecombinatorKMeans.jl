@@ -508,7 +508,8 @@ function kmeans_randswap(data::Matrix{Float64}, k::Integer;
         alltimes)
 end
 
-
+# Centroid Index
+# P. Fränti, M. Rezaei and Q. Zhao, Centroid index: cluster level similarity measure, Pattern Recognition, 2014
 function CI(true_centroids::Matrix{Float64}, centroids::Matrix{Float64})
     m, tk = size(true_centroids)
     @assert size(centroids, 1) == m
@@ -556,6 +557,36 @@ function CI_sym(centroids1::Matrix{Float64}, centroids2::Matrix{Float64})
     end
 
     return max(k1 - length(BitSet(a12)), k2 - length(BitSet(a21)))
+end
+
+# Variation of Information
+# M. Meilă, Comparing clusterings—an information based distance, Journal of multivariate analysis, 2007
+
+xlogx(x) = ifelse(iszero(x), zero(x), x * log(x))
+entropy(p) = -sum(xlogx, p)
+
+function VI(c1::Vector{Int}, c2::Vector{Int})
+    n = length(c1)
+    length(c2) == n || throw(ArgumentError("partitions bust have the same length, given: $(n) and $(length(c2))"))
+    a, k1 = extrema(c1)
+    a ≥ 1 || throw(ArgumentError("partitions elements must be ≥ 1, found $(a)"))
+    a, k2 = extrema(c2)
+    a ≥ 1 || throw(ArgumentError("partitions elements must be ≥ 1, found $(a)"))
+    o = zeros(k1, k2)
+    o1 = zeros(k1)
+    o2 = zeros(k2)
+    for i = 1:n
+        j1, j2 = c1[i], c2[i]
+        o[j1, j2] += 1
+        o1[j1] += 1
+        o2[j2] += 1
+    end
+    o ./= n
+    o1 ./= n
+    o2 ./= n
+    vi = 2entropy(o) - entropy(o1) - entropy(o2)
+    @assert vi > -1e-12
+    return max(0.0, vi)
 end
 
 end # module
