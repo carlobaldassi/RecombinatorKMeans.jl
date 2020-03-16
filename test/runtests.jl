@@ -35,7 +35,7 @@ end
 end
 
 @testset "reckmeans" begin
-    res = reckmeans(a3, k, 5, dβ = 0.1, verbose=false)
+    res = reckmeans(a3, k, 5, Δβ = 0.1, verbose=false)
     @test res.exit_status == :collapsed
     @test length(res.labels) == m
     @test all(∈(1:k), res.labels)
@@ -43,7 +43,7 @@ end
     @test 6.7 < res.cost < 7.5
     @test res.all_costs ≡ nothing
 
-    res = reckmeans(a3, k, 5, dβ = 0.1, verbose=false, keepallcosts=true)
+    res = reckmeans(a3, k, 5, Δβ = 0.1, verbose=false, keepallcosts=true)
     @test res.exit_status == :collapsed
     @test length(res.labels) == m
     @test all(∈(1:k), res.labels)
@@ -62,7 +62,7 @@ end
         Pkg.activate(joinpath(@__DIR__, ".."))
         using RecombinatorKMeans
     end
-    res = reckmeans(a3, k, 5, dβ = 0.1, verbose=false)
+    res = reckmeans(a3, k, 5, Δβ = 0.1, verbose=false)
     @test res.exit_status == :collapsed
     @test length(res.labels) == m
     @test all(∈(1:k), res.labels)
@@ -99,22 +99,34 @@ end
     end
     @test res.all_times[end] == res.time
 
-    res = kmeans_randswap(a3, k, max_time = 3.0, max_it = typemax(Int), verbose=false)
-    @test res.exit_status == :outoftime
-    @test length(res.labels) == m
-    @test all(∈(1:k), res.labels)
-    @test size(res.centroids) == (2,k)
-    @test 6.7 < res.cost < 7.5
-    @test res.time ≥ 3.0
-    @test res.all_costs ≡ nothing
-    @test res.all_times ≡ nothing
-
     res = kmeans_randswap(a3, k, target_cost = 7.0, max_it = typemax(Int), verbose=false)
     @test res.exit_status == :solved
     @test length(res.labels) == m
     @test all(∈(1:k), res.labels)
     @test size(res.centroids) == (2,k)
     @test 6.7 < res.cost ≤ 7.0
+    @test res.all_costs ≡ nothing
+    @test res.all_times ≡ nothing
+
+    res = kmeans_randswap(a3, k, max_time = 1.0, max_it = typemax(Int), verbose=false, seed = 66778899, final_converge=false)
+    @test res.exit_status == :outoftime
+    @test length(res.labels) == m
+    @test all(∈(1:k), res.labels)
+    @test size(res.centroids) == (2,k)
+    @test 6.7 < res.cost < 7.5
+    @test res.time ≥ 1.0
+    @test res.all_costs ≡ nothing
+    @test res.all_times ≡ nothing
+
+    nccost = res.cost
+
+    res = kmeans_randswap(a3, k, max_time = 1.0, max_it = typemax(Int), verbose=false, seed = 66778899, final_converge=true)
+    @test res.exit_status == :outoftime
+    @test length(res.labels) == m
+    @test all(∈(1:k), res.labels)
+    @test size(res.centroids) == (2,k)
+    @test 6.7 < res.cost < nccost
+    @test res.time ≥ 1.0
     @test res.all_costs ≡ nothing
     @test res.all_times ≡ nothing
 

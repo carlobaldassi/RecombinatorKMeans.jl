@@ -264,38 +264,38 @@ until some stopping criterion gets triggered. If it is an iterable with a finite
 e.g. `[10,5,2]`, the algorithm might exit after the end of the list instead.
 
 It returns an object of type `ResultsRecKMeans`, which contains the following fields:
-* exit_status: a symbol that indicates the reason why the algorithm stopped. It can take three
-  values, `:collapsed`, `:didntimprove` or `:maxiters`.
+* exit_status: a symbol that indicates the reason why the algorithm stopped. It can take two
+  values, `:collapsed` or `:maxiters`.
 * labels: a vector of labels (`n` integers from 1 to `k`)
 * centroids: a `d`×`k` matrix of centroids
 * cost: the final cost
-* all_costs: either `nothing`, or a vector of vectors of all the costs found during the
-  iteration (one vector per batch), depending on the value of the `keepallcosts` option.
+* all_costs: with the `keepallcosts==true` option, it holds a vector of vectors of all the costs
+  found during the iteration (one vector per batch); otherwise `nothing`
 
 The possible keyword arguments are:
 
-* `dβ`: a `Float64` (default=0.1), the reweigting parameter increment (only makes sense if
-  non-negative)
+* `Δβ`: a `Float64` (default=0.1), the reweigting parameter increment (only makes sense if
+  non-negative).
 * `seed`: random seed, either an integer or `nothing` (this is the default, it means no seeding
   is performed).
 * `tol`: a `Float64` (default=1e-4), the relative tolerance for determining whether the solutions
-  have collapsed
+  have collapsed.
 * `verbose`: a `Bool`; if `true` (the default) it prints information on screen.
-* `keepallcosts`: a `Bool` (default=`false`); if `true`, the returned structure contains all the
-  costs found during the iteration.
-* `max_it`: an `Int` (default=typemax(Int)), maximum number of Lloyd (kmeans) iterations.
+* `keepallcosts`: a `Bool` (default=`false`); if `true`, all the costs found during the iteration
+  are kept and returned in the output.
+* `max_it`: an `Int` (default=10)), maximum number of Lloyd (kmeans) iterations.
 * `lltol`: a `Float64` (default=1e-5), relative tolerance for Lloyd (kmeans) convergence.
 
 If there are workers available this function will parallelize each batch.
 """
 function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
-                   dβ::Float64 = 0.1,
+                   Δβ::Float64 = 0.1,
                    seed::Union{Integer,Nothing} = nothing,
                    tol::Float64 = 1e-4,
                    lltol::Float64 = 1e-5,
                    verbose::Bool = true,
                    keepallcosts::Bool = false,
-                   max_it::Int = typemax(Int)
+                   max_it::Int = 10
                   )
     seed ≢ nothing && Random.seed!(seed)
     m, n = size(data)
@@ -345,7 +345,7 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
             best_centr .= centroidsR[1]
         end
         resize!(w, J*k)
-        β += dβ
+        β += Δβ
         mean_cost = mean(costs)
         for a = 1:J
             w[(1:k) .+ (a-1)*k] .= exp(-β * ((costs[a] - best_cost) / (mean_cost - best_cost)))
@@ -399,6 +399,7 @@ function kmeans_randswap(data::Matrix{Float64}, k::Integer;
                          ll_tol::Float64 = 1e-5,
                          init::Union{String,Matrix{Float64}} = "++",
                          keepallcosts::Bool = false,
+                         final_converge::Bool = true,
                          verbose::Bool = true
                         )
     seed ≢ nothing && Random.seed!(seed)
@@ -428,6 +429,7 @@ function kmeans_randswap(data::Matrix{Float64}, k::Integer;
     exit_status = :running
     new_centroids, new_c, new_costs = similar(centroids), similar(c), similar(costs)
     it = 0
+    converged = false
     for outer it = 1:max_it
         new_centroids .= centroids
         new_c .= c
@@ -457,18 +459,21 @@ function kmeans_randswap(data::Matrix{Float64}, k::Integer;
         end
         new_cost = sum(new_costs)
 
+        new_converged = false
         for ll_it = 1:ll_max_it
             recompute_centroids!(new_c, data, new_centroids)
             new_costs = get_costs!(new_c, data, new_centroids)
             new_cost2 = sum(new_costs)
             if new_cost2 ≥ new_cost * (1 - ll_tol)
                 new_cost = new_cost2
+                new_converged = true
                 break
             end
             new_cost = new_cost2
         end
         if new_cost < cost
             cost = new_cost
+            converged = new_converged
             centroids, new_centroids = new_centroids, centroids
             c, new_c = new_c, c
             costs, new_costs = new_costs, costs
@@ -491,6 +496,17 @@ function kmeans_randswap(data::Matrix{Float64}, k::Integer;
         end
     end
     exit_status == :running && (exit_status = :maxiters)
+    if final_converge && !converged
+        while true
+            recompute_centroids!(c, data, centroids)
+            new_cost = assign_points!(c, data, centroids)
+            if new_cost ≥ cost * (1 - ll_tol)
+                cost = new_cost
+                break
+            end
+            cost = new_cost
+        end
+    end
     t = time() - t0
     verbose && @info "final cost = $cost time = $t"
     if keepallcosts
