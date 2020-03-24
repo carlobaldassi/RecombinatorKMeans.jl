@@ -85,9 +85,9 @@ After this `using RecombinatorKMeans` should work and `reckmeans` should run in 
 
 ### Reproducing the results in the paper
 
-For the purpose of complete reproducibility, you can check out the tag `paper-v2b` of the repository,
+For the purpose of complete reproducibility, you can check out the tag `paper-v3` of the repository,
 which will get you the version of the code used to collect the results in the [paper][RKMarXiv].
-Also, the repository includes a file "Manifest_20191123.toml" that specifies the exact version of the
+Also, the repository includes a file "Manifest_20200316.toml" that specifies the exact version of the
 dependencies that were used. You can use it to overwrite your "Manifest.toml" file and then call
 `instantiate` in pkg mode to reproduce the same environment.
 
