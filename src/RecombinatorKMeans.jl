@@ -3,7 +3,6 @@ module RecombinatorKMeans
 using StatsBase
 using SparseArrays
 using Random
-using Distributed
 
 export kmeans, reckmeans, kmeans_randswap
 
@@ -15,8 +14,8 @@ Base.@propagate_inbounds function _cost(d1, d2)
     return v1
 end
 
-let costsdict = Dict{Int,Vector{Float64}}(),
-    countdict = Dict{Int,Vector{Int}}()
+let costsdict = Dict{Tuple{Int,Int},Vector{Float64}}(),
+    countdict = Dict{Tuple{Int,Int},Vector{Int}}()
     global function get_costs!(c::Vector{Int}, data::Matrix{Float64}, centroids::Matrix{Float64}, inds = nothing)
         m, n = size(data)
         k = size(centroids, 2)
@@ -24,7 +23,7 @@ let costsdict = Dict{Int,Vector{Float64}}(),
         inds = (inds ≡ nothing ? (1:n) : inds)
         nr = length(inds)
 
-        costs = get!(costsdict, nr) do
+        costs = get!(costsdict, (Threads.threadid(),nr)) do
             zeros(nr)
         end
 
@@ -59,7 +58,7 @@ let costsdict = Dict{Int,Vector{Float64}}(),
         @assert size(centroids, 1) == m
         @assert length(c) == n
 
-        count = get!(countdict, k) do
+        count = get!(countdict, (Threads.threadid(),k)) do
             zeros(Int, k)
         end
 
@@ -286,7 +285,7 @@ The possible keyword arguments are:
 * `max_it`: an `Int` (default=10)), maximum number of Lloyd (kmeans) iterations.
 * `lltol`: a `Float64` (default=1e-5), relative tolerance for Lloyd (kmeans) convergence.
 
-If there are workers available this function will parallelize each batch.
+If there are multiple threads available this function will parallelize each batch.
 """
 function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
                    Δβ::Float64 = 0.1,
@@ -317,7 +316,9 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
         verbose && @info "it = $it J = $J"
         @assert length(w) == size(pool, 2)
         h0 = hash(pool)
-        res = pmap(1:J) do a
+        new_centroids = Vector{Matrix{Float64}}(undef, J)
+        new_costs = Vector{Float64}(undef, J)
+        Threads.@threads for a = 1:J
             h = hash((seed, a), h0)
             Random.seed!(h)  # horrible hack to ensure determinism (not really required, only useful for experiments)
             centr, c, _, cost = init_centroid_pp(pool, k, w = w, data = data)
@@ -331,10 +332,11 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
                 cost = new_cost
             end
             verbose && println("  a = $a cost = $cost")
-            return centr, cost
+            new_centroids[a] = centr
+            new_costs[a] = cost
         end
-        append!(centroidsR, (r[1] for r in res))
-        append!(costs, (r[2] for r in res))
+        append!(centroidsR, new_centroids)
+        append!(costs, new_costs)
         perm = sortperm(costs)
         centroidsR = centroidsR[perm[1:J]]
         costs = costs[perm[1:J]]
@@ -352,7 +354,7 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
         end
         w ./= sum(w)
         pool = hcat(centroidsR...)
-        verbose && (@everywhere flush(stdout); println("  mean cost = $mean_cost best_cost = $best_cost"))
+        verbose && println("  mean cost = $mean_cost best_cost = $best_cost")
         if mean_cost ≤ best_cost * (1 + tol)
             verbose && @info "collapsed"
             exit_status = :collapsed
@@ -366,9 +368,9 @@ function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
     verbose && @info "final cost = $costC"
 
     clear_cache!()
-    @sync for id in workers()
-        @spawnat id clear_cache!()
-    end
+    # @sync for id in workers()
+    #     @spawnat id clear_cache!()
+    # end
 
     return ResultsRecKMeans(
         exit_status,

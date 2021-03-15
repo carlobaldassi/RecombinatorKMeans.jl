@@ -1,7 +1,6 @@
 using RecombinatorKMeans
 using Test
 using DelimitedFiles
-using Distributed
 
 # The a3 dataset was downloaded from here:
 #
@@ -53,23 +52,6 @@ end
     @test all(res.all_costs) do vl
         all(6.7 .< vl .< 11)
     end
-end
-
-@testset "reckmeans parallel" begin
-    addwrk = addprocs(2)
-    @everywhere begin
-        using Pkg
-        Pkg.activate(joinpath(@__DIR__, ".."))
-        using RecombinatorKMeans
-    end
-    res = reckmeans(a3, k, 5, Δβ = 0.1, verbose=false)
-    @test res.exit_status == :collapsed
-    @test length(res.labels) == m
-    @test all(∈(1:k), res.labels)
-    @test size(res.centroids) == (2,k)
-    @test 6.7 < res.cost < 7.5
-    @test res.all_costs ≡ nothing
-    rmprocs(addwrk...)
 end
 
 @testset "kmeansRS" begin

@@ -4,7 +4,7 @@ This code implements the recombinator-k-means method described in the paper
 *"Recombinator-k-means: A population based algorithm that exploits k-means++ for recombination"* by C. Baldassi
 submitted for publication, (2019) ([arXiv][RKMarXiv]).
 
-The code is written in [Julia]. It requires Julia 1.0 or later.
+The code is written in [Julia]. It requires Julia 1.5 or later.
 
 This code works fine and it's usable, but it is intended as a demo and a reference implementation.
 For this reason, it has a few limitations, the main one being that it is not flexible or generic:
@@ -64,24 +64,8 @@ example the `runfile.jl` script in the `test` directory.)
 These three functions are available once you load the package: `kmeans`, `reckmeans` and `kmeans_randswap`. You
 can use the Julia help (press the <kbd>?</kbd> key in the REPL) to see their documentation.
 
-The `reckmeans` function will run in parallel if there are workers available. However, the code
-must be loaded on the workers too. To do this, run Julia with the `p` option:
-
-```
-$ julia -p 4 # this will use 4 cores
-```
-
-Then, before loading the package, do the following at the REPL:
-
-```
-julia> @everywhere using Pkg
-julia> @everywhere Pkg.activate(".")
-```
-
-(This assumes that you are running in the project's main directory, otherwise change `"."` to
-the correct path.)
-
-After this `using RecombinatorKMeans` should work and `reckmeans` should run in parallel.
+The `reckmeans` function will run in parallel if there are threads available: either run Julia with
+the `-t` option or use the `JULIA_NUM_THREADS` environment variable.
 
 ### Reproducing the results in the paper
 
@@ -89,7 +73,8 @@ For the purpose of complete reproducibility, you can check out the tag `paper-v3
 which will get you the version of the code used to collect the results in the [paper][RKMarXiv].
 Also, the repository includes a file "Manifest_20200316.toml" that specifies the exact version of the
 dependencies that were used. You can use it to overwrite your "Manifest.toml" file and then call
-`instantiate` in pkg mode to reproduce the same environment.
+`instantiate` in pkg mode to reproduce the same environment. Note that the version of Julia should
+be the same as that in the paper too.
 
 ## Licence
 
