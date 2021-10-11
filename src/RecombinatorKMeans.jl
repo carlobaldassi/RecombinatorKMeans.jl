@@ -1,10 +1,80 @@
 module RecombinatorKMeans
 
-using StatsBase
-using SparseArrays
 using Random
+using Statistics
+using StatsBase
+using ExtractMacro
 
-export kmeans, reckmeans, kmeans_randswap
+export kmeans, reckmeans, gakmeans
+
+mutable struct Configuration
+    m::Int
+    k::Int
+    n::Int
+    c::Vector{Int}
+    cost::Float64
+    costs::Vector{Float64}
+    centroids::Matrix{Float64}
+    active::BitVector
+    nonempty::BitVector
+    csizes::Vector{Int}
+    function Configuration(m::Int, k::Int, n::Int, c::Vector{Int}, costs::Vector{Float64}, centroids::Matrix{Float64})
+        @assert length(c) == n
+        @assert length(costs) == n
+        @assert size(centroids) == (m, k)
+        cost = sum(costs)
+        active = trues(k)
+        nonempty = trues(k)
+        csizes = zeros(Int, k)
+        if !all(c .== 0)
+            for i = 1:n
+                csizes[c[i]] += 1
+            end
+            nonempty .= csizes .> 0
+        end
+        return new(m, k, n, c, cost, costs, centroids, active, nonempty, csizes)
+    end
+    function Base.copy(config::Configuration)
+        @extract config : m k n c cost costs centroids active nonempty csizes
+        return new(m, k, n, copy(c), cost, copy(costs), copy(centroids), copy(active), copy(nonempty), copy(csizes))
+    end
+end
+
+function Configuration(data::Matrix{Float64}, centroids::Matrix{Float64})
+    m, n = size(data)
+    k = size(centroids, 2)
+    @assert size(centroids, 1) == m
+
+    c = zeros(Int, n)
+    costs = fill(Inf, n)
+    config = Configuration(m, k, n, c, costs, centroids)
+    partition_from_centroids!(config, data)
+    return config
+end
+
+function remove_empty!(config::Configuration)
+    @extract config: m k n c costs centroids active nonempty csizes
+
+    k_new = sum(nonempty)
+    if k_new == k
+        return config
+    end
+    centroids = centroids[:, nonempty]
+    new_inds = cumsum(nonempty)
+    for i = 1:n
+        @assert nonempty[c[i]]
+        c[i] = new_inds[c[i]]
+    end
+    csizes = csizes[nonempty]
+    nonempty = trues(k_new)
+
+    config.k = k_new
+    config.centroids = centroids
+    config.csizes = csizes
+    config.nonempty = nonempty
+
+    return config
+end
 
 Base.@propagate_inbounds function _cost(d1, d2)
     v1 = 0.0
@@ -14,95 +84,111 @@ Base.@propagate_inbounds function _cost(d1, d2)
     return v1
 end
 
-let costsdict = Dict{Tuple{Int,Int},Vector{Float64}}(),
-    countdict = Dict{Tuple{Int,Int},Vector{Int}}()
-    global function get_costs!(c::Vector{Int}, data::Matrix{Float64}, centroids::Matrix{Float64}, inds = nothing)
-        m, n = size(data)
-        k = size(centroids, 2)
-        @assert size(centroids, 1) == m
-        inds = (inds ≡ nothing ? (1:n) : inds)
-        nr = length(inds)
+# grouping method from Kaukoranta, Fränti, Nevlainen, "Reduced comparison for the exact GLA"
+function partition_from_centroids!(config::Configuration, data::Matrix{Float64})
+    @extract config: m k n c costs centroids active nonempty csizes
+    @assert size(data) == (m, n)
 
-        costs = get!(costsdict, (Threads.threadid(),nr)) do
-            zeros(nr)
+    active_inds = findall(active)
+    all_inds = collect(1:k)
+
+    fill!(nonempty, false)
+    fill!(csizes, 0)
+
+    num_fullsearch = 0
+    cost = 0.0
+    @inbounds for i in 1:n
+        ci = c[i]
+        if ci > 0 && active[ci]
+            old_v′ = costs[i]
+            @views new_v′ = _cost(data[:,i], centroids[:,ci])
+            fullsearch = (new_v′ > old_v′)
+        else
+            fullsearch = (ci == 0)
         end
+        num_fullsearch += fullsearch
 
-        fill!(c, 1)
-        i1 = 1
-        @inbounds for i = inds
-            v, x = Inf, 0
-            for j = 1:k
-                @views v1 = _cost(data[:,i], centroids[:,j])
-                if v1 < v
-                    v = v1
-                    x = j
-                end
+        v, x, inds = fullsearch ? (Inf, 0, all_inds) : (costs[i], ci, active_inds)
+        for j in inds
+            @views v′ = _cost(data[:,i], centroids[:,j])
+            if v′ < v
+                v, x = v′, j
             end
-            costs[i1], c[i1] = v, x
-            i1 += 1
         end
-
-        return costs
+        costs[i], c[i] = v, x
+        nonempty[x] = true
+        csizes[x] += 1
+        cost += v
     end
 
-    global function assign_points!(c, data, centroids)
-        k = size(centroids, 2)
+    config.cost = cost
+    return config
+end
 
-        costs = get_costs!(c, data, centroids)
-        return sum(costs)
-    end
 
-    global function recompute_centroids!(c, data, centroids)
-        m, n = size(data)
-        k = size(centroids, 2)
-        @assert size(centroids, 1) == m
-        @assert length(c) == n
+let centroidsdict = Dict{NTuple{2,Int},Matrix{Float64}}()
 
-        count = get!(countdict, (Threads.threadid(),k)) do
-            zeros(Int, k)
+    global function centroids_from_partition!(config::Configuration, data::Matrix{Float64})
+        @extract config: m k n c costs centroids active nonempty csizes
+        @assert size(data) == (m, n)
+
+        new_centroids = get!(centroidsdict, (m,k)) do
+            zeros(Float64, m, k)
         end
-
-        fill!(count, 0)
-        fill!(centroids, 0.0)
+        fill!(new_centroids, 0.0)
+        fill!(active, false)
         @inbounds for i = 1:n
             j = c[i]
             for l = 1:m
-                centroids[l,j] += data[l,i]
+                new_centroids[l,j] += data[l,i]
             end
-            count[j] += 1
         end
         @inbounds for j = 1:k
-            z = count[j]
+            z = csizes[j]
             z > 0 || continue
+            @assert nonempty[j]
             for l = 1:m
-                centroids[l,j] /= z
+                new_centroids[l,j] /= z
+                new_centroids[l,j] ≠ centroids[l,j] && (active[j] = true)
+                centroids[l,j] = new_centroids[l,j]
             end
         end
-
-        return centroids
+        return config
     end
 
     global function clear_cache!()
-        empty!(costsdict)
-        empty!(countdict)
+        empty!(centroidsdict)
     end
 end
 
-function init_centroid_unif(data::Matrix{Float64}, k::Int; w = nothing)
+function check_empty!(config::Configuration, data::Matrix{Float64})
+    @extract config: m k n c costs centroids active nonempty csizes
+    num_nonempty = sum(nonempty)
+    num_centroids = min(config.n, config.k)
+    gap = num_centroids - num_nonempty
+    gap == 0 && return false
+    to_fill = findall(.~(nonempty))[1:gap]
+    for j in to_fill
+        i = rand(1:n)
+        centroids[:,j] .= data[:,i]
+        active[j] = true
+    end
+    return true
+end
+
+
+
+function init_centroid_unif(data::Matrix{Float64}, k::Int; kw...)
     m, n = size(data)
-    centr = zeros(m, k)
-    w::Vector{Float64} = w ≡ nothing ? ones(n) : w
+    centroids = zeros(m, k)
     for j = 1:k
-        i = sample(1:n, Weights(w))
-        centr[:,j] .= data[:,i]
+        i = rand(1:n)
+        centroids[:,j] .= data[:,i]
     end
-    c = zeros(Int, size(data,2))
-    costs = get_costs!(c, data, centr)
-    return centr, c, costs, sum(costs)
+    return Configuration(data, centroids)
 end
 
-
-function compute_costs_one!(costs::Vector{Float64}, data::Matrix{Float64}, x::AbstractVector{<:Float64})
+function compute_costs_one!(costs::Vector{Float64}, data::AbstractMatrix{<:Float64}, x::AbstractVector{<:Float64})
     m, n = size(data)
     @assert length(costs) == n
     @assert length(x) == m
@@ -112,13 +198,14 @@ function compute_costs_one!(costs::Vector{Float64}, data::Matrix{Float64}, x::Ab
     end
     return costs
 end
-compute_costs_one(data::Matrix{Float64}, x::AbstractVector{<:Float64}) = compute_costs_one!(Array{Float64}(undef,size(data,2)), data, x)
+compute_costs_one(data::AbstractMatrix{<:Float64}, x::AbstractVector{<:Float64}) = compute_costs_one!(Array{Float64}(undef,size(data,2)), data, x)
 
 # This function was first written from scratch from the k-means++ paper, then improved after reading
 # the corresponding scikit-learn's code at https://github.com/scikit-learn/scikit-learn, then heavily modified.
 # The scikit-learn's version was first coded by Jan Schlueter as a port of some other code that is now lost.
 function init_centroid_pp(pool::Matrix{Float64}, k::Int; ncandidates = nothing, w = nothing, data = nothing)
     m, np = size(pool)
+    @assert np ≥ k
 
     ncandidates::Int = ncandidates ≡ nothing ? floor(Int, 2 + log(k)) : ncandidates
     w = (w ≡ nothing ? ones(np) : w)::Vector{Float64}
@@ -145,37 +232,43 @@ function init_centroid_pp(pool::Matrix{Float64}, k::Int; ncandidates = nothing, 
         nonz = count(pw .≠ 0)
         candidates = sample(1:np, pw, min(ncandidates,np,nonz), replace = false)
         cost_best = Inf
-        i_best = 0
-        for i in candidates
-            new_c .= c
-            pooli = pool[:,i]
-            new_costs .= costs
-            @inbounds for i1 = 1:n
-                @views v = _cost(data[:,i1], pooli)
-                if v < new_costs[i1]
-                    new_c[i1] = j
-                    new_costs[i1] = v
+        y_best = 0
+        for y in candidates
+            pooly = pool[:,y]
+            compute_costs_one!(new_costs, data, pooly)
+            cost = 0.0
+            @inbounds for i = 1:n
+                v = new_costs[i]
+                v′ = costs[i]
+                if v < v′
+                    new_c[i] = j
+                    cost += v
+                else
+                    new_costs[i] = v′
+                    new_c[i] = c[i]
+                    cost += v′
                 end
             end
-            cost = sum(new_costs)
             if cost < cost_best
                 cost_best = cost
-                i_best = i
+                y_best = y
                 new_costs_best, new_costs = new_costs, new_costs_best
                 new_c_best, new_c = new_c, new_c_best
             end
         end
-        @assert i_best ≠ 0 && cost_best < Inf
-        centr[:,j] .= pool[:,i_best]
+        @assert y_best ≠ 0 && cost_best < Inf
+        pooly = pool[:,y_best]
+        centr[:,j] .= pooly
         costs, new_costs_best = new_costs_best, costs
         if dataispool
             pcosts = costs
         elseif j < k
-            pcosts .= min.(pcosts, compute_costs_one(pool, @view(pool[:,i_best])))
+            pcosts .= min.(pcosts, compute_costs_one(pool, pooly))
         end
         c, new_c_best = new_c_best, c
+        dataispool && (pc = c)
     end
-    return centr, c, costs, sum(costs)
+    return Configuration(m, k, n, c, costs, centr)
 end
 
 """
@@ -184,7 +277,7 @@ end
 Runs k-means using Lloyd's algorithm on the given data matrix (if the size is `d`×`n` then `d` is
 the dimension and `n` the number of points, i.e. data is organized by column).
 It returns: 1) a vector of labels (`n` integers from 1 to `k`); 2) a `d`×`k` matrix of centroids;
-3) the final cost
+3) the final cost; 4) whether it converged or not
 
 The possible keyword arguments are:
 
@@ -197,79 +290,233 @@ The possible keyword arguments are:
   `"++"` for k-means++ initialization, or `"unif"` for uniform.
 * `tol`: a `Float64`, relative tolerance for detecting convergence (default=1e-5).
 * `verbose`: a `Bool`; if `true` (the default) it prints information on screen.
+* `ncandidates`: if init=="++", set the number of candidates for k-means++ (the default is
+  `nothing`, which means that it is set automatically)
 """
-function kmeans(data::Matrix{Float64}, k::Integer;
-                max_it::Integer = 1000,
-                seed::Union{Integer,Nothing} = nothing,
-                init::Union{String,Matrix{Float64}} = "++",
-                tol::Float64 = 1e-5,
-                verbose::Bool = true
-               )
+function kmeans(
+        data::Matrix{Float64}, k::Integer;
+        max_it::Integer = 1000,
+        seed::Union{Integer,Nothing} = nothing,
+        init::Union{String,Matrix{Float64}} = "++",
+        tol::Float64 = 1e-5,
+        verbose::Bool = true,
+        ncandidates::Union{Nothing,Int} = nothing,
+    )
     seed ≢ nothing && Random.seed!(seed)
     m, n = size(data)
 
     if init isa String
         if init == "++"
-            centroids, c, _, cost = init_centroid_pp(data, k)
+            config = init_centroid_pp(data, k; ncandidates)
         elseif init == "unif"
-            centroids, c, _, cost = init_centroid_unif(data, k)
+            config = init_centroid_unif(data, k)
         else
             throw(ArgumentError("unrecognized init string \"$init\"; should be \"++\" or \"unif\""))
         end
     else
         size(init) == (m, k) || throw(ArgumentError("invalid size of init, expected $((m,k)), found: $(size(init))"))
-        centroids = init
-        c = zeros(Int, n)
-        cost = assign_points!(c, data, centroids)
+        centroids = copy(init)
+        config = Configuration(data, centroids)
     end
 
-    verbose && println("initial cost = $cost")
+    verbose && println("initial cost = $(config.cost)")
+    converged = lloyd!(config, data, max_it, tol, verbose)
 
+    return config.c, config.centroids, config.cost, converged
+end
+
+
+
+function crossover_GA(configs::Vector{Configuration}, data::Matrix{Float64}, k::Int, a::Int; kw...)
+    Jc = length(configs)
+    (i1, i2) = [(x,y) for x = 1:Jc for y = (x+1):Jc][a] # TODO: quite ugly...
+    return merge_pnn(configs[i1], configs[i2], data, k)
+end
+
+
+function lloyd!(config::Configuration, data::Matrix{Float64}, max_it::Int, tol::Float64, verbose::Bool)
+    cost0 = config.cost
     converged = false
     it = 0
     for outer it = 1:max_it
-        recompute_centroids!(c, data, centroids)
-        new_cost = assign_points!(c, data, centroids)
-        if new_cost ≥ cost * (1 - tol)
-            cost = new_cost
+        centroids_from_partition!(config, data)
+        old_cost = config.cost
+        found_empty = check_empty!(config, data)
+        partition_from_centroids!(config, data)
+        new_cost = config.cost
+        if new_cost ≥ old_cost * (1 - tol) && !found_empty
+            verbose && println("converged cost = $new_cost")
             converged = true
             break
         end
-        cost = new_cost
-        verbose && println("it = $it cost = $cost")
+        verbose && println("lloyd it = $it cost = $new_cost")
     end
-    verbose && println("final cost = $cost (" *
-                       (converged ? "converged" : "did not converge") *
-                       " in $it iterations)")
-    return c, centroids, cost
+    return converged
 end
 
-struct ResultsRecKMeans
+function combine_configs(config1::Configuration, config2::Configuration)
+    @extract config1 : m1=m k1=k n1=n c1=c costs1=costs centroids1=centroids
+    @extract config2 : m2=m k2=k n2=n c2=c costs2=costs centroids2=centroids
+    @assert (m1, n1) == (m2, n2)
+    m, n = m1, n1
+    k = k1 + k2
+    centroids_new = hcat(centroids1, centroids2)
+    @assert size(centroids_new) == (m, k)
+    c_new = zeros(Int, n)
+    costs_new = zeros(n)
+    for i = 1:n
+        j1, j2 = c1[i], c2[i]
+        cost1, cost2 = costs1[i], costs2[i]
+        if cost1 ≤ cost2
+            j = j1
+            cost = cost1
+        else
+            j = k1 + j2
+            cost = cost2
+        end
+        c_new[i], costs_new[i] = j, cost
+    end
+    return Configuration(m, k, n, c_new, costs_new, centroids_new)
+end
+
+function pairwise_nn!(config::Configuration, tgt_k::Int)
+    @extract config : m k n c costs centroids csizes
+    if k < tgt_k
+        @assert false # TODO: inflate the config? this shouldn't normally happen
+    end
+    if k == tgt_k
+        return config
+    end
+
+    nns = zeros(Int, k)
+    nns_costs = fill(Inf, k)
+    @inbounds for j = 1:k
+        z = csizes[j]
+        v, x = Inf, 0
+        for j′ = 1:k
+            j′ == j && continue
+            z′ = csizes[j′]
+            @views v1 = (z * z′) / (z + z′) * _cost(centroids[:,j], centroids[:,j′])
+            if v1 < v
+                v = v1
+                x = j′
+            end
+        end
+        nns_costs[j], nns[j] = v, x
+    end
+
+    @inbounds while k > tgt_k
+        jm = findmin(@view(nns_costs[1:k]))[2]
+        js = nns[jm]
+        @assert nns_costs[js] == nns_costs[jm]
+        @assert jm < js
+
+        # update centroid
+        zm, zs = csizes[jm], csizes[js]
+        for l = 1:m
+            centroids[l,jm] = (zm * centroids[l,jm] + zs * centroids[l,js]) / (zm + zs)
+            centroids[l,js] = centroids[l,k]
+        end
+
+        # update csizes
+        csizes[jm] += zs
+        csizes[js] = csizes[k]
+        csizes[k] = 0
+
+        # update partition
+        # not needed since we don't use c in this computation and
+        # we call partition_from_centroids! right after this function
+        # for i = 1:n
+        #     ci = c[i]
+        #     if ci == js
+        #         c[i] = jm
+        #     elseif ci == k
+        #         c[i] = js
+        #     end
+        # end
+
+        # update nns
+        nns[js] = nns[k]
+        nns[k] = 0
+        nns_costs[js] = nns_costs[k]
+        nns_costs[k] = Inf
+
+        num_fullupdates = 0
+        for j = 1:(k-1)
+            # 1) merged cluster jm, or clusters which used to point to either jm or js
+            #    perform a full update
+            if j == jm || nns[j] == jm || nns[j] == js
+                num_fullupdates += 1
+                z = csizes[j]
+                v, x = Inf, 0
+                for j′ = 1:(k-1)
+                    j′ == j && continue
+                    z′ = csizes[j′]
+                    @views v1 = (z * z′) / (z + z′) * _cost(centroids[:,j], centroids[:,j′])
+                    if v1 < v
+                        v, x = v1, j′
+                    end
+                end
+                nns_costs[j], nns[j] = v, x
+            # 2) clusters that did not point to jm or js
+            #    only compare the old cost with the cost for the updated cluster
+            else
+                z = csizes[j]
+                # note: what used to point at k now must point at js
+                v, x = nns_costs[j], (nns[j] ≠ k ? nns[j] : js)
+                j′ = jm
+                z′ = csizes[j′]
+                @views v′ = (z * z′) / (z + z′) * _cost(centroids[:,j], centroids[:,j′])
+                if v′ < v
+                    v, x = v′, j′
+                end
+                nns_costs[j], nns[j] = v, x
+                @assert nns[j] ≠ j
+            end
+        end
+
+        k -= 1
+    end
+
+    config.k = k
+    config.centroids = centroids[:,1:k]
+    config.csizes = csizes[1:k]
+    @assert all(config.csizes .> 0)
+    config.active = trues(k)
+    config.nonempty = trues(k)
+    fill!(config.c, 0) # reset in order for partition_from_centroids! to work
+
+end
+
+function merge_pnn(config1::Configuration, config2::Configuration, data::Matrix{Float64}, tgt_k::Int)
+    config = combine_configs(config1, config2)
+    centroids_from_partition!(config, data)
+    remove_empty!(config)
+    pairwise_nn!(config, tgt_k)
+    partition_from_centroids!(config, data)
+    return config
+end
+
+struct Results
     exit_status::Symbol
     labels::Vector{Int}
     centroids::Matrix{Float64}
     cost::Float64
-    all_costs::Union{Nothing,Vector{Vector{Float64}}}
 end
 
 """
-  reckmeans(data::Matrix{Float64}, k::Integer, Jlist; keywords...)
+  reckmeans(data::Matrix{Float64}, k::Integer, J::Integer; keywords...)
 
 Runs recombinator-k-means on the given data matrix (if the size is `d`×`n` then `d` is
-the dimension and `n` the number of points, i.e. data is organized by column). The `Jlist`
-paramter is either an integer or an iterable that specifies how many restarts to do for
-each successive batch. If it is an integer, it just does the same number of batches indefinitely
-until some stopping criterion gets triggered. If it is an iterable with a finite length,
-e.g. `[10,5,2]`, the algorithm might exit after the end of the list instead.
+the dimension and `n` the number of points, i.e. data is organized by column). `k` is
+the number of clusters, `J` is the population size
 
-It returns an object of type `ResultsRecKMeans`, which contains the following fields:
-* exit_status: a symbol that indicates the reason why the algorithm stopped. It can take two
-  values, `:collapsed` or `:maxiters`.
+It returns an object of type `Results`, which contains the following fields:
+* exit_status: a symbol that indicates the reason why the algorithm stopped. It can take three
+  values, `:collapsed`, `:maxgenerations` or `:noimprovement`.
 * labels: a vector of labels (`n` integers from 1 to `k`)
 * centroids: a `d`×`k` matrix of centroids
 * cost: the final cost
-* all_costs: with the `keepallcosts==true` option, it holds a vector of vectors of all the costs
-  found during the iteration (one vector per batch); otherwise `nothing`
 
 The possible keyword arguments are:
 
@@ -279,252 +526,242 @@ The possible keyword arguments are:
   is performed).
 * `tol`: a `Float64` (default=1e-4), the relative tolerance for determining whether the solutions
   have collapsed.
-* `verbose`: a `Bool`; if `true` (the default) it prints information on screen.
-* `keepallcosts`: a `Bool` (default=`false`); if `true`, all the costs found during the iteration
-  are kept and returned in the output.
-* `max_it`: an `Int` (default=10)), maximum number of Lloyd (kmeans) iterations.
 * `lltol`: a `Float64` (default=1e-5), relative tolerance for Lloyd (kmeans) convergence.
+* `max_it`: an `Int` (default=10)), maximum number of Lloyd (kmeans) iterations.
+* `max_gen`: an `Int` (default=1_000)), maximum number of generations.
+* `stop_if_noimprovement`: a `Bool` (default=false), stop if the new generation did not improve on
+  the old one
+* `verbose`: a `Bool`; if `true` (the default) it prints information on screen.
 
 If there are multiple threads available this function will parallelize each batch.
 """
-function reckmeans(data::Matrix{Float64}, k::Integer, Jlist;
-                   Δβ::Float64 = 0.1,
-                   seed::Union{Integer,Nothing} = nothing,
-                   tol::Float64 = 1e-4,
-                   lltol::Float64 = 1e-5,
-                   verbose::Bool = true,
-                   keepallcosts::Bool = false,
-                   max_it::Int = 10
-                  )
+function reckmeans(
+        data::Matrix{Float64}, k::Integer, J::Int;
+        Δβ::Float64 = 0.1,
+        seed::Union{Integer,Nothing} = nothing,
+        tol::Float64 = 1e-4,
+        lltol::Float64 = 1e-5,
+        verbose::Bool = true,
+        max_it::Int = 10,
+        stop_if_noimprovement::Bool = false,
+        max_gen::Int = 1_000
+    )
+    J ≥ 2 || throw(ArgumentError("J must be at least 2"))
+
     seed ≢ nothing && Random.seed!(seed)
     m, n = size(data)
 
     β = 0.0
     best_cost = Inf
-    best_centr = Matrix{Float64}(undef, m, k)
+    local best_config::Configuration
 
     pool = data
     w = ones(size(pool, 2))
-    allcosts = keepallcosts ? Vector{Float64}[] : nothing
-    centroidsR = Matrix{Float64}[]
-    costs = Float64[]
+
+    configs = Configuration[]
+
     exit_status = :running
-    if Jlist isa Int
-        Jlist = Iterators.repeated(Jlist)
-    end
-    for (it,J) in enumerate(Jlist)
-        verbose && @info "it = $it J = $J"
+    for generation = 0:max_gen
+        verbose && @info "gen = $generation"
         @assert length(w) == size(pool, 2)
         h0 = hash(pool)
-        new_centroids = Vector{Matrix{Float64}}(undef, J)
-        new_costs = Vector{Float64}(undef, J)
+        new_configs = Vector{Configuration}(undef, J)
         Threads.@threads for a = 1:J
             h = hash((seed, a), h0)
             Random.seed!(h)  # horrible hack to ensure determinism (not really required, only useful for experiments)
-            centr, c, _, cost = init_centroid_pp(pool, k, w = w, data = data)
-            for ll_it = 1:max_it
-                recompute_centroids!(c, data, centr)
-                new_cost = assign_points!(c, data, centr)
-                if new_cost ≥ cost * (1 - lltol)
-                    cost = new_cost
-                    break
-                end
-                cost = new_cost
-            end
-            verbose && println("  a = $a cost = $cost")
-            new_centroids[a] = centr
-            new_costs[a] = cost
-        end
-        append!(centroidsR, new_centroids)
-        append!(costs, new_costs)
-        perm = sortperm(costs)
-        centroidsR = centroidsR[perm[1:J]]
-        costs = costs[perm[1:J]]
+            config = init_centroid_pp(pool, k; w, data)
 
-        keepallcosts && push!(allcosts, copy(costs))
-        if costs[1] < best_cost
-            best_cost = costs[1]
-            best_centr .= centroidsR[1]
+            converged = lloyd!(config, data, max_it, lltol, false)
+            verbose && println("  a = $a cost = $(config.cost)")
+            new_configs[a] = config
         end
-        resize!(w, J*k)
-        β += Δβ
+        append!(configs, new_configs)
+        sort!(configs, by=config->config.cost)
+        configs = configs[1:J]
+
+        if configs[1].cost < best_cost
+            best_cost = configs[1].cost
+            best_config = copy(configs[1])
+            improved = true
+        else
+            improved = false
+        end
+        mean_cost = mean(config.cost for config in configs)
+        stddev_cost = std((config.cost for config in configs), mean = mean_cost)
+        verbose && println("  best_cost = $best_cost mean cost = $mean_cost ± $stddev_cost")
+        if stop_if_noimprovement && !improved
+            verbose && @info "no improvement"
+            exit_status = :noimprovement
+            break
+        end
+        if mean_cost ≤ best_cost * (1 + tol)
+            verbose && @info "collapsed"
+            exit_status = :collapsed
+            break
+        end
+
+        if generation < max_gen
+            pool = hcat((config.centroids for config in configs)...)
+            resize!(w, size(pool,2))
+            β += Δβ
+            for a = 1:(length(w) ÷ k)
+                w[(1:k) .+ (a-1)*k] .= exp(-β * ((configs[a].cost - best_cost) / (mean_cost - best_cost)))
+            end
+            # w ./= sum(w)
+        end
+    end
+    exit_status == :running && (exit_status = :maxgenerations)
+
+    verbose && @info "final cost = $best_cost"
+
+    clear_cache!()
+
+    return Results(
+        exit_status,
+        best_config.c,
+        best_config.centroids,
+        best_config.cost,
+        )
+end
+
+# find c such that: (c * (c-1)) ÷ 2 ≥ J
+elitist_crossset_size(J) = ceil(Int, (1 + √(1 + 8J)) / 2)
+
+
+"""
+  gakmeans(data::Matrix{Float64}, k::Integer, J::Integer; keywords...)
+
+Runs ga-k-means on the given data matrix (if the size is `d`×`n` then `d` is
+the dimension and `n` the number of points, i.e. data is organized by column). `k` is
+the number of clusters, `J` is the population size
+
+It returns an object of type `Results`, which contains the following fields:
+* exit_status: a symbol that indicates the reason why the algorithm stopped. It can take three
+  values, `:collapsed`, `:maxgenerations` or `:noimprovement`.
+* labels: a vector of labels (`n` integers from 1 to `k`)
+* centroids: a `d`×`k` matrix of centroids
+* cost: the final cost
+
+The possible keyword arguments are:
+
+* `seed`: random seed, either an integer or `nothing` (this is the default, it means no seeding
+  is performed).
+* `init`: a `String` (default=`"++"`). It can be either `"++"` for k-means++ initialization,
+  or `"unif"` for uniform+Lloyd, `"raw"` for uniform (non-optimized).
+* `tol`: a `Float64` (default=1e-4), the relative tolerance for determining whether the solutions
+  have collapsed.
+* `lltol`: a `Float64` (default=1e-5), relative tolerance for Lloyd (kmeans) convergence.
+* `max_it`: an `Int` (default=10)), maximum number of Lloyd (kmeans) iterations.
+* `max_gen`: an `Int` (default=1_000)), maximum number of generations.
+* `stop_if_noimprovement`: a `Bool` (default=true), stop if the new generation did not improve on
+  the old one
+* `verbose`: a `Bool`; if `true` (the default) it prints information on screen.
+
+If there are multiple threads available this function will parallelize each batch.
+"""
+function gakmeans(
+        data::Matrix{Float64}, k::Integer, J::Int;
+        seed::Union{Integer,Nothing} = nothing,
+        init::String = "++",
+        tol::Float64 = 1e-4,
+        lltol::Float64 = 1e-5,
+        verbose::Bool = true,
+        max_it::Integer = 10,
+        max_gen::Integer = 1_000,
+        stop_if_noimprovement::Bool = true,
+    )
+    init ∈ ["++", "unif", "raw"] || throw(ArgumentError("init must be one of \"++\", \"unif\" or \"raw\""))
+    J ≥ 2 || throw(ArgumentError("J must be at least 2"))
+
+    seed ≢ nothing && Random.seed!(seed)
+    m, n = size(data)
+
+    Jc = elitist_crossset_size(J)
+
+    init_func = init == "++" ? init_centroid_pp :
+                init_centroid_unif
+
+    configs = Vector{Configuration}(undef, J)
+
+    h0 = hash(data)
+
+    exit_status = :running
+    Threads.@threads for a = 1:J
+        h = hash((seed, a), h0)
+        Random.seed!(h)  # horrible hack to ensure determinism (not really required, only useful for experiments)
+        config = init_func(data, k)
+        init ≠ "raw" && (converged = lloyd!(config, data, max_it, lltol, false))
+        configs[a] = config
+    end
+    sort!(configs, by=config->config.cost)
+    costs = [config.cost for config in configs]
+    verbose && @info "costs after init: $(costs)"
+
+    best_cost = configs[1].cost
+    best_config = copy(configs[1])
+
+    mean_cost = mean(config.cost for config in configs)
+    stddev_cost = std((config.cost for config in configs), mean = mean_cost)
+
+    for generation = 1:max_gen
+        old_costs = costs
+        elite_configs = configs[1:Jc]
+        new_configs = Vector{Configuration}(undef, J)
+        h0 = hash(configs)
+        Threads.@threads for a = 1:J
+            h = hash((seed, a), h0)
+            Random.seed!(h)  # horrible hack to ensure determinism (not really required, only useful for experiments)
+            config::Configuration = crossover_GA(elite_configs, data, k, a)
+            converged = lloyd!(config, data, max_it, lltol, false)
+
+            verbose && println("  a = $a cost = $(config.cost)")
+            new_configs[a] = config
+        end
+        sort!(new_configs, by=config->config.cost) # TODO ? the scaling is bad, but in practice this is negligible
+        configs = new_configs
+        costs = [config.cost for config in configs]
+
+        if configs[1].cost < best_cost
+            best_cost = configs[1].cost
+            best_config = copy(configs[1])
+            improved = true
+        else
+            improved = false
+        end
+
+        verbose && @info "costs after gen $generation: $costs"
         mean_cost = mean(costs)
-        for a = 1:J
-            w[(1:k) .+ (a-1)*k] .= exp(-β * ((costs[a] - best_cost) / (mean_cost - best_cost)))
+        stddev_cost = std(costs, mean = mean_cost)
+        verbose && println("  best_cost = $best_cost mean cost = $mean_cost ± $stddev_cost")
+
+        ## same condition as in the original implementation
+        if stop_if_noimprovement && !improved && generation > 2
+            verbose && @info "no improvement"
+            exit_status = :noimprovement
+            break
         end
-        w ./= sum(w)
-        pool = hcat(centroidsR...)
-        verbose && println("  mean cost = $mean_cost best_cost = $best_cost")
         if mean_cost ≤ best_cost * (1 + tol)
             verbose && @info "collapsed"
             exit_status = :collapsed
             break
         end
     end
-    exit_status == :running && (exit_status = :maxiters)
-    cC = zeros(Int, n)
-    centroidsC = best_centr
-    costC = assign_points!(cC, data, centroidsC)
-    verbose && @info "final cost = $costC"
+    if exit_status == :running
+        exit_status = :maxgenerations
+    end
+
+    verbose && @info "final cost = $best_cost"
 
     clear_cache!()
-    # @sync for id in workers()
-    #     @spawnat id clear_cache!()
-    # end
 
-    return ResultsRecKMeans(
+    return Results(
         exit_status,
-        cC,
-        centroidsC,
-        costC,
-        allcosts)
+        best_config.c,
+        best_config.centroids,
+        best_config.cost,
+        )
 end
 
-struct ResultsKMeansRS
-    exit_status::Symbol
-    labels::Vector{Int}
-    centroids::Matrix{Float64}
-    cost::Float64
-    time::Float64
-    iters::Int
-    all_costs::Union{Nothing,Vector{Float64}}
-    all_times::Union{Nothing,Vector{Float64}}
-end
-
-
-function kmeans_randswap(data::Matrix{Float64}, k::Integer;
-                         max_it::Integer = 1000,
-                         max_time::Float64 = Inf,
-                         target_cost::Float64 = 0.0,
-                         seed::Union{Integer,Nothing} = nothing,
-                         ll_max_it::Integer = 2,
-                         ll_tol::Float64 = 1e-5,
-                         init::Union{String,Matrix{Float64}} = "++",
-                         keepallcosts::Bool = false,
-                         final_converge::Bool = true,
-                         verbose::Bool = true
-                        )
-    seed ≢ nothing && Random.seed!(seed)
-    m, n = size(data)
-
-    t0 = time()
-
-    if init isa String
-        if init == "++"
-            centroids, c, costs, cost = init_centroid_pp(data, k)
-        elseif init == "unif"
-            centroids, c, costs, cost = init_centroid_unif(data, k)
-        else
-            throw(ArgumentError("unrecognized init string \"$init\"; should be \"++\" or \"unif\""))
-        end
-    else
-        size(init) == (m, k) || throw(ArgumentError("invalid size of init, expected $((m,k)), found: $(size(init))"))
-        centroids = init
-        c = zeros(Int, n)
-        costs = get_costs!(c, data, centroids)
-        cost = sum(costs)
-    end
-
-    verbose && @info "initial cost = $cost"
-    allcosts = keepallcosts ? Float64[cost] : nothing
-    alltimes = keepallcosts ? Float64[time() - t0] : nothing
-    exit_status = :running
-    new_centroids, new_c, new_costs = similar(centroids), similar(c), similar(costs)
-    it = 0
-    converged = false
-    for outer it = 1:max_it
-        new_centroids .= centroids
-        new_c .= c
-        new_costs .= costs
-        j = rand(1:k)
-        i = rand(1:n)
-        xi = data[:,i]
-        new_centroids[:,j] = xi
-
-        msk = (c .== j)
-        inds = findall(msk)
-        c_msk = zeros(Int, length(inds))
-        costs_msk = get_costs!(c_msk, data, new_centroids, inds)
-        i_msk = 0
-        @inbounds for i1 = 1:n
-            if msk[i1]
-                i_msk += 1
-                new_costs[i1] = costs_msk[i_msk]
-                new_c[i1] = c_msk[i_msk]
-            else
-                @views v = _cost(data[:,i1], xi)
-                if v < new_costs[i1]
-                    new_costs[i1] = v
-                    new_c[i1] = j
-                end
-            end
-        end
-        new_cost = sum(new_costs)
-
-        new_converged = false
-        for ll_it = 1:ll_max_it
-            recompute_centroids!(new_c, data, new_centroids)
-            new_costs = get_costs!(new_c, data, new_centroids)
-            new_cost2 = sum(new_costs)
-            if new_cost2 ≥ new_cost * (1 - ll_tol)
-                new_cost = new_cost2
-                new_converged = true
-                break
-            end
-            new_cost = new_cost2
-        end
-        if new_cost < cost
-            cost = new_cost
-            converged = new_converged
-            centroids, new_centroids = new_centroids, centroids
-            c, new_c = new_c, c
-            costs, new_costs = new_costs, costs
-            t = time() - t0
-            verbose && println("it = $it cost = $cost time = $t")
-            if keepallcosts
-                append!(allcosts, cost)
-                append!(alltimes, t)
-            end
-        end
-        if cost ≤ target_cost
-            exit_status = :solved
-            verbose && @info "target_cost achieved"
-            break
-        end
-        if time() - t0 ≥ max_time
-            exit_status = :outoftime
-            verbose && @info "max_time reached"
-            break
-        end
-    end
-    exit_status == :running && (exit_status = :maxiters)
-    if final_converge && !converged
-        while true
-            recompute_centroids!(c, data, centroids)
-            new_cost = assign_points!(c, data, centroids)
-            if new_cost ≥ cost * (1 - ll_tol)
-                cost = new_cost
-                break
-            end
-            cost = new_cost
-        end
-    end
-    t = time() - t0
-    verbose && @info "final cost = $cost time = $t"
-    if keepallcosts
-        append!(allcosts, cost)
-        append!(alltimes, t)
-    end
-    return ResultsKMeansRS(
-        exit_status,
-        c,
-        centroids,
-        cost,
-        t,
-        it,
-        allcosts,
-        alltimes)
-end
 
 # Centroid Index
 # P. Fränti, M. Rezaei and Q. Zhao, Centroid index: cluster level similarity measure, Pattern Recognition, 2014
