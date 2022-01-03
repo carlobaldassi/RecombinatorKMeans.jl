@@ -5,7 +5,7 @@ using Statistics
 using StatsBase
 using ExtractMacro
 
-export kmeans, reckmeans, gakmeans
+export kmeans, reckmeans, gakmeans, rswapkmeans
 
 mutable struct Configuration
     m::Int
@@ -51,6 +51,21 @@ function Configuration(data::Matrix{Float64}, centroids::Matrix{Float64})
     partition_from_centroids!(config, data)
     return config
 end
+
+function Base.copy!(config::Configuration, other::Configuration)
+    @extract config : m k n c costs centroids active nonempty csizes
+    @extract other : om=m ok=k on=n oc=c ocosts=costs ocentroids=centroids oactive=active ononempty=nonempty ocsizes=csizes
+    @assert m == om && k == ok && n == on
+    copy!(c, oc)
+    config.cost = other.cost
+    copy!(costs, ocosts)
+    copy!(centroids, ocentroids)
+    copy!(active, oactive)
+    copy!(nonempty, ononempty)
+    copy!(csizes, ocsizes)
+    return config
+end
+
 
 function remove_empty!(config::Configuration)
     @extract config: m k n c costs centroids active nonempty csizes
@@ -527,8 +542,8 @@ The possible keyword arguments are:
 * `tol`: a `Float64` (default=1e-4), the relative tolerance for determining whether the solutions
   have collapsed.
 * `lltol`: a `Float64` (default=1e-5), relative tolerance for Lloyd (kmeans) convergence.
-* `max_it`: an `Int` (default=10)), maximum number of Lloyd (kmeans) iterations.
-* `max_gen`: an `Int` (default=1_000)), maximum number of generations.
+* `max_it`: an `Int` (default=10), maximum number of Lloyd (kmeans) iterations.
+* `max_gen`: an `Int` (default=1_000), maximum number of generations.
 * `stop_if_noimprovement`: a `Bool` (default=false), stop if the new generation did not improve on
   the old one
 * `verbose`: a `Bool`; if `true` (the default) it prints information on screen.
@@ -651,8 +666,8 @@ The possible keyword arguments are:
 * `tol`: a `Float64` (default=1e-4), the relative tolerance for determining whether the solutions
   have collapsed.
 * `lltol`: a `Float64` (default=1e-5), relative tolerance for Lloyd (kmeans) convergence.
-* `max_it`: an `Int` (default=10)), maximum number of Lloyd (kmeans) iterations.
-* `max_gen`: an `Int` (default=1_000)), maximum number of generations.
+* `max_it`: an `Int` (default=10), maximum number of Lloyd (kmeans) iterations.
+* `max_gen`: an `Int` (default=1_000), maximum number of generations.
 * `stop_if_noimprovement`: a `Bool` (default=true), stop if the new generation did not improve on
   the old one
 * `verbose`: a `Bool`; if `true` (the default) it prints information on screen.
@@ -760,6 +775,115 @@ function gakmeans(
         best_config.centroids,
         best_config.cost,
         )
+end
+
+
+"""
+  rswapkmeans(data::Matrix{Float64}, k::Integer; keywords...)
+
+Runs random-swap-k-means on the given data matrix (if the size is `d`×`n` then `d` is
+the dimension and `n` the number of points, i.e. data is organized by column). `k` is
+the number of clusters, `J` is the population size
+
+It returns an object of type `Results`, which contains the following fields:
+* exit_status: a symbol that indicates the reason why the algorithm stopped. It can take three
+  values, `:solved`, `:maxswaps` or `:outoftime`.
+* labels: a vector of labels (`n` integers from 1 to `k`)
+* centroids: a `d`×`k` matrix of centroids
+* cost: the final cost
+
+The possible keyword arguments are:
+
+* `seed`: random seed, either an integer or `nothing` (this is the default, it means no seeding
+  is performed).
+* `init`: a `String` (default=`"++"`). It can be either `"++"` for k-means++ initialization,
+  or `"unif"` for uniform+Lloyd.
+* `lltol`: a `Float64` (default=1e-5), relative tolerance for Lloyd (kmeans) convergence.
+* `max_it`: an `Int` (default=2), maximum number of Lloyd (kmeans) iterations.
+* `max_swaps`: an `Int` (default=1_000), maximum number of swaps to attempt.
+* `max_time`: a `Float64` (default=Inf), maximum allowed (wall-clock) time.
+* `target_cost`: a `Float64` (default=0.0), stop if the cost achieves this value (the problem is
+  considered solved)
+* `final_convergence`: a `Bool`; if `true` (the default) a final run of Lloyd (kmeans) with
+  unbounded iterations is performed until convergence, in case it hadn't already been achieved
+* `verbose`: a `Bool`; if `true` (the default) it prints information on screen.
+"""
+function rswapkmeans(
+        data::Matrix{Float64}, k::Integer;
+        seed::Union{Integer,Nothing} = nothing,
+        init::String = "++",
+        lltol::Float64 = 1e-5,
+        max_swaps::Integer = 1_000,
+        max_time::Float64 = Inf,
+        target_cost::Float64 = 0.0,
+        max_it::Integer = 2,
+        final_converge::Bool = true,
+        verbose::Bool = true,
+    )
+    init ∈ ["++", "unif"] || throw(ArgumentError("init must be one of \"++\" or \"unif\""))
+
+    seed ≢ nothing && Random.seed!(seed)
+    m, n = size(data)
+
+    t0 = time()
+
+    init_func = init == "++" ? init_centroid_pp :
+                init_centroid_unif
+
+    config = init_func(data, k)
+    converged = lloyd!(config, data, max_swaps, lltol, false)
+
+    verbose && @info "cost after init: $(config.cost)"
+
+    exit_status = :running
+    best_config = copy(config)
+    best_converged = converged
+    it = 0
+    for outer it = 1:max_swaps
+        copy!(config, best_config)
+
+        j = rand(1:k)
+        i = rand(1:n)
+        config.centroids[:,j] = @view data[:,i]
+        config.active[j] = true
+        partition_from_centroids!(config, data)
+
+        converged = lloyd!(config, data, max_it, lltol, false)
+
+        if config.cost < best_config.cost
+            best_config, config = config, best_config
+            best_converged = converged
+            t = time() - t0
+            verbose && println("  it = $it cost = $(best_config.cost) time = $t")
+        end
+        if best_config.cost ≤ target_cost
+            exit_status = :solved
+            verbose && @info "target_cost achieved"
+            break
+        end
+        if time() - t0 ≥ max_time
+            exit_status = :outoftime
+            verbose && @info "max_time reached"
+            break
+        end
+    end
+    if exit_status == :running
+        exit_status = :maxswaps
+    end
+    if final_converge && !best_converged
+        best_converged = lloyd!(best_config, data, typemax(Int), lltol, false)
+    end
+    t = time() - t0
+    verbose && @info "final cost = $(best_config.cost) time = $t"
+
+    clear_cache!()
+
+    return Results(
+        exit_status,
+        best_config.c,
+        best_config.centroids,
+        best_config.cost
+      )
 end
 
 

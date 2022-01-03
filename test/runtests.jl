@@ -52,3 +52,35 @@ end
     @test size(res.centroids) == (2,k)
     @test 6.7 < res.cost < 7.5
 end
+
+@testset "rswapkmeans uniform" begin
+    res = rswapkmeans(a3, k, max_time=1.0, max_swaps=typemax(Int), verbose=false)
+    @test res.exit_status == :outoftime
+    @test length(res.labels) == m
+    @test all(∈(1:k), res.labels)
+    @test size(res.centroids) == (2,k)
+    @test 6.7 < res.cost < 7.5
+
+    res = rswapkmeans(a3, k, max_time=Inf, max_swaps=200, verbose=false)
+    @test res.exit_status == :maxswaps
+    @test length(res.labels) == m
+    @test all(∈(1:k), res.labels)
+    @test size(res.centroids) == (2,k)
+    @test 6.7 < res.cost < 7.5
+
+    res = rswapkmeans(a3, k, max_time=Inf, max_swaps=typemax(Int), target_cost=6.75, verbose=false)
+    @test res.exit_status == :solved
+    @test length(res.labels) == m
+    @test all(∈(1:k), res.labels)
+    @test size(res.centroids) == (2,k)
+    @test 6.7 < res.cost ≤ 6.75
+
+    res = rswapkmeans(a3, k, max_time=1.0, max_swaps=typemax(Int), verbose=false, init="unif")
+    @test res.exit_status == :outoftime
+    @test length(res.labels) == m
+    @test all(∈(1:k), res.labels)
+    @test size(res.centroids) == (2,k)
+    @test 6.7 < res.cost < 11
+
+end
+
