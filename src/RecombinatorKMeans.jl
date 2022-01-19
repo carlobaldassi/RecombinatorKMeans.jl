@@ -141,13 +141,13 @@ function partition_from_centroids!(config::Configuration, data::Matrix{Float64})
 end
 
 
-let centroidsdict = Dict{NTuple{2,Int},Matrix{Float64}}()
+let centroidsdict = Dict{NTuple{3,Int},Matrix{Float64}}()
 
     global function centroids_from_partition!(config::Configuration, data::Matrix{Float64})
         @extract config: m k n c costs centroids active nonempty csizes
         @assert size(data) == (m, n)
 
-        new_centroids = get!(centroidsdict, (m,k)) do
+        new_centroids = get!(centroidsdict, (Threads.threadid(),m,k)) do
             zeros(Float64, m, k)
         end
         fill!(new_centroids, 0.0)
